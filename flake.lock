@@ -88,11 +88,11 @@
         "treefmt-nix": "treefmt-nix"
       },
       "locked": {
-        "lastModified": 1782676019,
-        "narHash": "sha256-Us/1PxsQztu7s+uotlpIAk/sTNppLb6UI05q9xdBZPE=",
+        "lastModified": 1783947097,
+        "narHash": "sha256-X6R1bgfMFj87pWyKD2IATIrrBtu3xPwjeskMeO0OHL0=",
         "owner": "deepak-science",
         "repo": "hanko",
-        "rev": "5ee5bfb1a5c65cadd5f644f013146596e00cf2ad",
+        "rev": "54b0e1d09aef36317152dad7ccf5cd7d24642f09",
         "type": "github"
       },
       "original": {
