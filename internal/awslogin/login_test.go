@@ -1,6 +1,7 @@
 package awslogin
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -35,5 +36,21 @@ func TestEnsureSession_ExpiredNoTTY(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "aws sso login --profile my-profile") {
 		t.Errorf("error should include the login command, got %q", err)
+	}
+}
+
+// /dev/null is a character device, so a ModeCharDevice check mistakes it for a terminal.
+func TestStdinIsTerminal_DevNull(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = devNull.Close() }()
+	orig := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = orig }()
+
+	if stdinIsTerminal() {
+		t.Error("stdin from /dev/null reported as a terminal")
 	}
 }
