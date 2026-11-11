@@ -47,7 +47,16 @@ STUBDIR="$(mktemp -d)"
 BASH_BIN="$(command -v bash)"
 
 printf '#!%s\n' "$BASH_BIN" >"$STUBDIR/kubectl"
+# With `-o json`, argv goes to stderr and stdout carries JSON: an empty cluster for get, one created object for apply.
 cat >>"$STUBDIR/kubectl" <<'EOF'
+if [[ " $* " == *" -o json "* ]]; then
+  echo "KUBECTL $*" >&2
+  case ${1:-} in
+  get) echo '{"kind":"List","items":[]}' ;;
+  apply) echo '{"kind":"List","items":[{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"gitea","resourceVersion":"7"}}]}' ;;
+  esac
+  exit 0
+fi
 echo "KUBECTL $*"
 if [[ ${1:-} == diff ]]; then exit 1; fi
 exit 0
@@ -163,6 +172,23 @@ echo
 echo "▶ extra args passthrough (after --)"
 out=$(cd "$proj" && "$KEST" deploy gitea --force -- --server-side 2>&1 || true)
 assert_contains "kubectl passthrough" "--server-side" "$out"
+
+echo
+echo "▶ server_side: true → kubectl apply --server-side as field manager kest"
+sed -i 's|    manifests: k8s-manifests/gitea|&\n    server_side: true|' "$proj/.kestconfig"
+out=$(cd "$proj" && "$KEST" deploy gitea --force 2>&1 || true)
+assert_contains "server-side apply flags" "apply -f k8s-manifests/gitea --context my-cluster --server-side --field-manager=kest -o json" "$out"
+assert_contains "pre-apply snapshot" "KUBECTL get -f k8s-manifests/gitea" "$out"
+assert_contains "per-object change line" "namespace/gitea created" "$out"
+assert_contains "change totals" "1 created, 0 changed, 0 unchanged" "$out"
+assert_not_contains "no --force-conflicts by default" "--force-conflicts" "$out"
+out=$(cd "$proj" && "$KEST" deploy gitea --force --force-conflicts 2>&1 || true)
+assert_contains "--force-conflicts passed through" "--field-manager=kest --force-conflicts" "$out"
+out=$(cd "$proj" && "$KEST" deploy gitea --diff 2>&1 || true)
+assert_contains "server-side diff" "KUBECTL diff -f k8s-manifests/gitea --context my-cluster --server-side --field-manager=kest" "$out"
+out=$(cd "$proj" && "$KEST" deploy homepage --force 2>&1 || true)
+assert_not_contains "helm deploys ignore --server-side" "--server-side" "$out"
+sed -i '/server_side: true/d' "$proj/.kestconfig"
 
 echo
 echo "▶ guard posture: local apply without --force is refused outside CI"

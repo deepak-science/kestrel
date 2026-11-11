@@ -67,6 +67,8 @@ type Deploy struct {
 	// --- manifest source (Manifests set) ---
 	// Manifests is a directory or file applied with `kubectl apply -f`.
 	Manifests string `yaml:"manifests,omitempty"`
+	// ServerSide applies with `kubectl apply --server-side --field-manager=kest`.
+	ServerSide bool `yaml:"server_side,omitempty"`
 
 	// --- common ---
 	// Target is the deployment target (key in targets:). Required.
@@ -112,6 +114,8 @@ func (d Deploy) Validate(name string) error {
 		return fmt.Errorf("deploy %q: set only one of chart: or manifests:, not both", name)
 	case d.Target == "":
 		return fmt.Errorf("deploy %q: target is required", name)
+	case d.ServerSide && d.Chart != "":
+		return fmt.Errorf("deploy %q: server_side applies to manifests: deploys only", name)
 	}
 	return nil
 }

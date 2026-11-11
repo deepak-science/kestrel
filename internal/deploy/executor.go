@@ -38,23 +38,36 @@ func helmArgs(release string, d config.Deploy, res Resolution, action string, ex
 	return append(args, extra...)
 }
 
+// FieldManager is the server-side apply field manager kest applies as.
+const FieldManager = "kest"
+
+type kubectlOpts struct {
+	Diff           bool
+	ServerSide     bool
+	ForceConflicts bool
+	// JSON adds `-o json` to an apply, for the server-side change summary.
+	JSON bool
+}
+
 // kubectlArgs builds the kubectl args for a manifest deploy: `apply -f` or
 // `diff -f`.
-func kubectlArgs(path string, res Resolution, namespace string, diff bool, extra []string) []string {
+func kubectlArgs(path string, res Resolution, namespace string, o kubectlOpts, extra []string) []string {
 	verb := "apply"
-	if diff {
+	if o.Diff {
 		verb = "diff"
 	}
-	args := []string{verb, "-f", path}
-
-	if res.KubeContext != "" {
-		args = append(args, "--context", res.KubeContext)
-	}
-	if res.Kubeconfig != "" {
-		args = append(args, "--kubeconfig", res.Kubeconfig)
-	}
+	args := append([]string{verb, "-f", path}, clusterArgs(res)...)
 	if namespace != "" {
 		args = append(args, "--namespace", namespace)
+	}
+	if o.ServerSide {
+		args = append(args, "--server-side", "--field-manager="+FieldManager)
+		if o.ForceConflicts {
+			args = append(args, "--force-conflicts")
+		}
+	}
+	if o.JSON && !o.Diff {
+		args = append(args, "-o", "json")
 	}
 
 	return append(args, extra...)

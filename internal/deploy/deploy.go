@@ -48,6 +48,10 @@ type Policy struct {
 	// Wait, for manifest applies, runs rollout status on each workload with this per-workload timeout.
 	// Zero skips it. Helm applies already wait via --atomic.
 	Wait time.Duration
+	// ForceConflicts takes ownership of fields another field manager holds (server_side deploys only).
+	ForceConflicts bool
+	// Stdout receives the server-side apply change summary. Defaults to os.Stdout.
+	Stdout io.Writer
 }
 
 func (p Policy) out() io.Writer {
@@ -55,6 +59,13 @@ func (p Policy) out() io.Writer {
 		return p.Out
 	}
 	return os.Stderr
+}
+
+func (p Policy) stdout() io.Writer {
+	if p.Stdout != nil {
+		return p.Stdout
+	}
+	return os.Stdout
 }
 
 // ExecResult captures the outcome of a deploy execution.
@@ -129,11 +140,22 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		args = helmArgs(release, d, res, action, extra)
 	case config.DeployManifest:
 		command = "kubectl"
-		args = kubectlArgs(d.Manifests, res, d.Namespace, action == ActionDiff, extra)
+		args = kubectlArgs(d.Manifests, res, d.Namespace, kubectlOpts{
+			Diff:           action == ActionDiff,
+			ServerSide:     d.ServerSide,
+			ForceConflicts: pol.ForceConflicts,
+		}, extra)
 	}
 
 	opts := runner.Options{Dir: projectRoot(cfg), Env: env}
-	result, err := runner.RunWithOpts(command, args, opts)
+	var result *runner.Result
+	var err error
+	if d.Kind() == config.DeployManifest && action == ActionApply && d.ServerSide {
+		ko := kubectlOpts{ServerSide: true, ForceConflicts: pol.ForceConflicts}
+		result, err = serverSideApply(d.Manifests, res, d.Namespace, ko, extra, opts, pol.stdout(), pol.out())
+	} else {
+		result, err = runner.RunWithOpts(command, args, opts)
+	}
 	out := &ExecResult{ExitCode: result.ExitCode}
 
 	// kubectl diff exits 1 when differences exist; higher codes are real errors.
