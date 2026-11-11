@@ -7,9 +7,15 @@ import (
 	"os/exec"
 )
 
+// Overridable in tests.
+var (
+	sessionValid  = stsSessionValid
+	isInteractive = stdinIsTerminal
+)
+
 // EnsureSession checks whether the given AWS profile has a valid session
 // (via sts get-caller-identity) and, if not, runs aws sso login.
-// This is interactive and should only be called from developer workflows.
+// Without a TTY it returns an error instead, since the browser flow would block forever.
 func EnsureSession(profile string) error {
 	if profile == "" {
 		return nil
@@ -18,6 +24,11 @@ func EnsureSession(profile string) error {
 	if sessionValid(profile) {
 		slog.Debug("aws session valid", "profile", profile)
 		return nil
+	}
+
+	if !isInteractive() {
+		slog.Warn("aws session expired, no tty for sso login", "profile", profile)
+		return fmt.Errorf("AWS session expired for profile %q — run: aws sso login --profile %s", profile, profile)
 	}
 
 	slog.Info("aws sso login starting", "profile", profile)
@@ -37,10 +48,15 @@ func EnsureSession(profile string) error {
 	return nil
 }
 
-// sessionValid returns true if sts get-caller-identity succeeds for the profile.
-func sessionValid(profile string) bool {
+// stsSessionValid returns true if sts get-caller-identity succeeds for the profile.
+func stsSessionValid(profile string) bool {
 	cmd := exec.Command("aws", "sts", "get-caller-identity", "--profile", profile)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
+}
+
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }

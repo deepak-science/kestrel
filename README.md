@@ -78,7 +78,7 @@ aws:
   #       aws_profile: prd-sso
   accounts: {}
   # Automatically run `aws sso login` when a session is expired.
-  # Skipped in CI.
+  # Skipped in CI. Without a TTY, kest exits with the login command to run instead.
   auto_sso_login: false
 
 # --- Kubernetes ---
