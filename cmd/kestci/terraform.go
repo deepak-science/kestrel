@@ -103,6 +103,9 @@ func executeCIAction(action string, root swoop.Root, baseDir string) error {
 	_, err := swoop.Execute(cfg, root, baseDir, action, res, swoop.Policy{
 		Ambient:      true,
 		PrintContext: true,
+		SavePlan:     tfSavePlan,
+		Summary:      tfSummary,
+		ApplyPlan:    tfApplyPlan,
 	})
 	if err != nil {
 		return fmt.Errorf("terraform %s failed: %w", action, err)
@@ -125,7 +128,17 @@ func ciResolveBaseDir() (string, error) {
 	return os.Getwd()
 }
 
+var (
+	tfSavePlan  bool
+	tfSummary   bool
+	tfApplyPlan bool
+)
+
 func init() {
+	tfPlanCmd.Flags().BoolVar(&tfSavePlan, "out", false, "save the plan to .terraform/kest.tfplan for apply --plan")
+	tfPlanCmd.Flags().BoolVar(&tfSummary, "summary", false, "print a resource-level summary instead of the full plan (implies --out)")
+	tfApplyCmd.Flags().BoolVar(&tfApplyPlan, "plan", false, "apply the saved plan from plan --out instead of re-planning")
+
 	rootCmd.AddCommand(tfInitCmd)
 	rootCmd.AddCommand(tfPlanCmd)
 	rootCmd.AddCommand(tfApplyCmd)

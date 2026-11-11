@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/deepak-science/kestrel/internal/config"
 	"github.com/deepak-science/kestrel/internal/resolve"
@@ -81,6 +83,14 @@ type Policy struct {
 	PrintContext bool
 	// Out is where the context block is written. Defaults to os.Stderr.
 	Out io.Writer
+	// SavePlan (plan only) writes the plan to PlanPath and records what it was made from.
+	SavePlan bool
+	// Summary (plan only) prints a resource-level summary instead of full plan output; implies SavePlan.
+	Summary bool
+	// ApplyPlan (apply only) applies the saved planfile instead of re-planning, refusing if it's missing or stale.
+	ApplyPlan bool
+	// Stdout receives the plan summary. Defaults to os.Stdout.
+	Stdout io.Writer
 }
 
 // Execute runs one terraform action against a root and records it to local
@@ -103,9 +113,54 @@ func Execute(cfg *config.Config, root Root, baseDir, action string, res Resoluti
 		command = cfg.TerraformCommand()
 	}
 
-	result, err := RunTerraform(command, root, profile, action)
+	args := []string{action}
+	savePlan := action == "plan" && (pol.SavePlan || pol.Summary)
+	applyPlan := action == "apply" && pol.ApplyPlan
+	switch {
+	case savePlan:
+		clearPlan(root)
+		if err := os.MkdirAll(filepath.Dir(PlanPath(root)), 0o755); err != nil {
+			return nil, err
+		}
+		args = append(args, "-out="+PlanPath(root))
+	case applyPlan:
+		meta, err := CheckPlan(root, res.Effective)
+		if err != nil {
+			return nil, err
+		}
+		p := func(format string, a ...any) { _, _ = fmt.Fprintf(pol.out(), format, a...) }
+		p("applying saved plan from %s (%s ago)\n", meta.CreatedAt.Local().Format("2006-01-02 15:04:05"), time.Since(meta.CreatedAt).Round(time.Second))
+		if summary, err := ShowPlanSummary(command, root, profile); err == nil {
+			p("%s\n", summary)
+		}
+		args = append(args, PlanPath(root))
+	}
+
+	result, err := runTerraform(command, root, profile, pol.Summary && savePlan, args...)
+	if err == nil && savePlan {
+		err = finishSavedPlan(command, root, profile, res.Effective, pol)
+	}
+	if err == nil && applyPlan {
+		// Terraform won't reapply a used plan; removing it keeps `--plan` from pointing at one.
+		clearPlan(root)
+	}
 	RecordAction(baseDir, root.Path, action, result)
 	return result, err
+}
+
+func finishSavedPlan(command string, root Root, profile, planProfile string, pol Policy) error {
+	if err := writePlanMeta(root, planProfile); err != nil {
+		return err
+	}
+	if !pol.Summary {
+		return nil
+	}
+	summary, err := ShowPlanSummary(command, root, profile)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprint(pol.stdout(), summary)
+	return nil
 }
 
 func (p Policy) out() io.Writer {
@@ -113,6 +168,13 @@ func (p Policy) out() io.Writer {
 		return p.Out
 	}
 	return os.Stderr
+}
+
+func (p Policy) stdout() io.Writer {
+	if p.Stdout != nil {
+		return p.Stdout
+	}
+	return os.Stdout
 }
 
 func printContext(out io.Writer, root Root, res Resolution, pol Policy) {
