@@ -13,8 +13,8 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 
 ### P1 — reviewed == applied
 
-- **Saved-plan apply for swoop.** `swoop apply` re-plans, so the reviewed plan isn't guaranteed to be the one that runs. Want `kest swoop plan <root> --out` (writes a planfile under the root, e.g. `.terraform/kest.tfplan`) and `kest swoop apply <root> --plan` (applies that file, refusing if missing/stale). Terraform applies a saved plan without prompting, which gives a safe `--auto-approve` for free; a bare `--auto-approve` without a planfile stays disallowed. Today the workaround is `echo yes |`.
-- **`--summary` for swoop plan.** `tofu show -json <planfile>` → print only resource addresses, action, and changed attribute paths (e.g. `~ helm_release.traefik: version 41.4.0 → 42.3.1`). Replaces grepping ANSI-stripped plan output. Builds on the planfile above; could also feed `PlanSummary` and the kestci plan-surfacing gap.
+- **Saved-plan apply for swoop — DONE.** `swoop plan --out` writes `.terraform/kest.tfplan` plus a sidecar recording git HEAD, a hash of the root's `.tf`/`.tfvars`/lock files, and the AWS profile. `swoop apply --plan` refuses if the planfile is missing or any of those changed, prints the summary, then applies without a prompt; the planfile is removed after a successful apply. Terraform itself rejects plans whose state has moved. Same flags on `kestci`. A bare `--auto-approve` stays unsupported. Open: local modules outside the root are covered only by HEAD + the clean-worktree guard, so a `--force` apply with dirty module edits isn't caught (terraform still applies the reviewed plan, just not those edits).
+- **`--summary` for swoop plan — DONE.** Renders `show -json` as one line per changed resource with changed attribute paths, masking sensitive values; implies `--out`. Open: feed it into `PlanSummary`/state instead of the parsed plan line.
 - **`kest deploy --diff --confirm`.** Show diff, prompt, apply in one invocation instead of two. For helm, `helm diff` isn't atomic with upgrade either, so this is "same invocation", not a hard guarantee.
 
 ### P1 — manifest apply fidelity
@@ -120,7 +120,7 @@ The homelab is the atypical consumer of kest (non-AWS providers, LAN-only, non-E
 - **Branch/environment gating:** not built into kest. The OIDC trust policy guards it — it validates GitHub claims (environment, ref) and simply won't mint prod credentials outside the right context. Making the wrong assume-role *impossible* beats a bypassable `guard.CheckBranch`, so the CLI doesn't duplicate (or weaken) that boundary. The existing clean-worktree guard stays; branch gating does not move into kest.
 
 **Still open:**
-- **Plan surfacing:** `PlanSummary` is recorded to local state, which is ephemeral on a runner. PR-comment / plan-artifact workflows need plan output emitted to stdout/file, not just state.
+- **Plan surfacing:** partly addressed — `kestci plan --summary` emits a compact summary to stdout and `--out` leaves a planfile to carry as an artifact. The example workflows don't use them yet.
 - **Self-hosted runners** are on the table (homelab LAN, or work-specific networks). A first step can be `kestci` commands wrapped in a `justfile` before any GitHub Actions wiring — the binary should be pleasant to drive that way too.
 - **`--changed` on kestci.** `kest swoop` scopes to roots a branch touched; `kestci` can't, so CI workflows fan out an explicit matrix instead (see [ci.md](ci.md) / [examples/ci/](examples/ci/)). Porting `--changed` (and `--dir`) onto kestci would let `kestci plan --changed` gate PRs directly.
 - **Terraform-flag passthrough.** kestci `init|plan|apply` take exactly one target and forward nothing, so CI can't pass `-detailed-exitcode` (drift detection parses "No changes" out of plan output instead), `-lock-timeout`, `-var`, etc. A trailing `-- <args>` passthrough would fix the drift-exit-code case cleanly.

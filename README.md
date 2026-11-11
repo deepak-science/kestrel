@@ -283,8 +283,22 @@ kest swoop list --dir prd       # filter by top-level directory
 kest swoop plan "live/dev/*"    # glob targeting
 kest swoop plan infra           # substring match
 kest swoop plan --changed       # only roots with git changes
+kest swoop plan dev/vpc --out     # save the plan to .terraform/kest.tfplan
+kest swoop plan dev/vpc --summary # one line per changed resource (also saves)
+kest swoop apply dev/vpc --plan   # apply exactly the saved plan, no prompt
 kest swoop edit dev/vpc         # open $EDITOR in root directory
 eval "$(kest swoop cd dev/vpc)" # cd into root directory
+```
+
+`apply --plan` applies the reviewed plan instead of re-planning. Terraform rejects it if state has moved since, and kest also refuses if HEAD, the root's `.tf`/`.tfvars`/lock files, or the AWS profile changed. The planfile is removed once applied. Planfiles hold sensitive values in plaintext, so keep `.terraform/` gitignored. `--summary` masks sensitive values:
+
+```
+-/+ terraform_data.pinned
+      triggers_replace[0]: "41.4.0" → "42.3.1" (forces replacement)
+~   helm_release.traefik
+      version: "41.4.0" → "42.3.1"
+
+Plan: 1 to add, 1 to change, 1 to destroy.
 ```
 
 Swoop tracks the last time you ran init/plan/apply on each root, so you can see at a glance what's stale. The TUI also supports `e` to edit and `c` to cd directly from the root picker.

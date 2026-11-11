@@ -16,7 +16,17 @@ import (
 var (
 	swoopChanged   string
 	swoopActionDir string
+	swoopSavePlan  bool
+	swoopSummary   bool
+	swoopApplyPlan bool
 )
+
+func withPlanFlags(pol swoop.Policy) swoop.Policy {
+	pol.SavePlan = swoopSavePlan
+	pol.Summary = swoopSummary
+	pol.ApplyPlan = swoopApplyPlan
+	return pol
+}
 
 var swoopInitCmd = &cobra.Command{
 	Use:   "init [target]",
@@ -49,7 +59,11 @@ If the target matches a single root, it runs immediately.
 If it matches multiple roots (via glob), they run sequentially with a summary.
 
 Use --changed to target roots with modified .tf files.
-Use --dir to filter by top-level directory.`,
+Use --dir to filter by top-level directory.
+
+Use --out to save the plan to .terraform/kest.tfplan in each root, for
+"kest swoop apply --plan". --summary prints one line per changed resource
+(with changed attributes) instead of the full plan, and also saves it.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		target := ""
@@ -71,6 +85,11 @@ If it matches multiple roots (via glob), they run sequentially with a summary.
 
 Use --changed to target roots with modified .tf files.
 Use --dir to filter by top-level directory.
+
+Use --plan to apply the plan saved by "kest swoop plan --out" instead of
+re-planning. Terraform applies a saved plan without prompting. kest refuses
+if the planfile is missing, or if HEAD, the root's config, or the AWS
+profile changed since the plan.
 
 Apply has additional safety guards:
 - Requires --force when not in CI
@@ -250,7 +269,7 @@ func executeSingle(action string, root swoop.Root, baseDir string) error {
 		"tf_version", root.TFVersion,
 	)
 
-	result, err := swoop.Execute(cfg, root, baseDir, action, res, swoop.Policy{PrintContext: true})
+	result, err := swoop.Execute(cfg, root, baseDir, action, res, withPlanFlags(swoop.Policy{PrintContext: true}))
 	if err != nil {
 		slog.Warn("terraform action failed", "action", action, "root", root.Path, "err", err)
 		return fmt.Errorf("terraform %s failed: %w", action, err)
@@ -396,7 +415,7 @@ func runSwoopBatch(action string, roots []swoop.Root, baseDir string) error {
 			"root", root.Path,
 			"aws_profile", res.Effective,
 		)
-		execResult, err := swoop.Execute(cfg, root, baseDir, action, res, swoop.Policy{})
+		execResult, err := swoop.Execute(cfg, root, baseDir, action, res, withPlanFlags(swoop.Policy{}))
 
 		br := batchResult{root: root, err: err}
 		if execResult != nil {
@@ -597,6 +616,10 @@ func init() {
 		c.ValidArgsFunction = completeSwoopRoots
 		_ = c.RegisterFlagCompletionFunc("dir", completeSwoopDirs)
 	}
+
+	swoopPlanCmd.Flags().BoolVar(&swoopSavePlan, "out", false, "save the plan to .terraform/kest.tfplan for apply --plan")
+	swoopPlanCmd.Flags().BoolVar(&swoopSummary, "summary", false, "print a resource-level summary instead of the full plan (implies --out)")
+	swoopApplyCmd.Flags().BoolVar(&swoopApplyPlan, "plan", false, "apply the saved plan from plan --out instead of re-planning")
 
 	swoopCmd.AddCommand(swoopInitCmd)
 	swoopCmd.AddCommand(swoopPlanCmd)

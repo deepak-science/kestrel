@@ -42,17 +42,18 @@ type TFVersionCheck struct {
 // awsProfile is injected as AWS_PROFILE if non-empty. Plan output is also
 // captured so the summary line can be parsed.
 func RunTerraform(command string, root Root, awsProfile string, args ...string) (*ExecResult, error) {
-	var env map[string]string
-	if awsProfile != "" {
-		env = map[string]string{"AWS_PROFILE": awsProfile}
-	}
+	return runTerraform(command, root, awsProfile, false, args...)
+}
 
+// runTerraform is RunTerraform with an option to keep plan stdout off the terminal.
+func runTerraform(command string, root Root, awsProfile string, quiet bool, args ...string) (*ExecResult, error) {
 	isPlan := len(args) > 0 && args[0] == "plan"
 
 	res, err := runner.RunWithOpts(command, args, runner.Options{
 		Dir:           root.AbsPath,
-		Env:           env,
+		Env:           profileEnv(awsProfile),
 		CaptureStdout: isPlan,
+		Silent:        isPlan && quiet,
 	})
 
 	out := &ExecResult{ExitCode: res.ExitCode}
@@ -60,6 +61,27 @@ func RunTerraform(command string, root Root, awsProfile string, args ...string) 
 		out.PlanSummary = parsePlanSummary(res.Stdout)
 	}
 	return out, err
+}
+
+func profileEnv(awsProfile string) map[string]string {
+	if awsProfile == "" {
+		return nil
+	}
+	return map[string]string{"AWS_PROFILE": awsProfile}
+}
+
+// ShowPlanSummary renders the root's saved planfile via `show -json`.
+func ShowPlanSummary(command string, root Root, awsProfile string) (string, error) {
+	res, err := runner.RunWithOpts(command, []string{"show", "-json", PlanPath(root)}, runner.Options{
+		Dir:           root.AbsPath,
+		Env:           profileEnv(awsProfile),
+		CaptureStdout: true,
+		Silent:        true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("%s show -json: %w", command, err)
+	}
+	return FormatPlanSummary([]byte(res.Stdout))
 }
 
 // parsePlanSummary extracts the plan summary from terraform plan output.

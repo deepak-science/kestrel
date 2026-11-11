@@ -171,6 +171,52 @@ out=$(cd "$proj" && KEST_TERRAFORM_COMMAND=terraform "$KEST" swoop init live/dev
 assert_contains "env beats project config (runs terraform)" "Terraform" "$out"
 assert_not_contains "env beats project config (no OpenTofu)" "OpenTofu" "$out"
 
+echo
+echo "▶ saved plans: plan --summary / apply --plan"
+
+# terraform_data is built in, so this plans and applies with no provider download.
+for tf in terraform tofu; do
+  proj=$(mkproject)
+  cat >>"$proj/iac/live/dev/main.tf" <<'EOF'
+variable "secret" {
+  default   = "hunter2"
+  sensitive = true
+}
+resource "terraform_data" "app" {
+  input = { version = "1.0.0", token = var.secret }
+}
+EOF
+  export KEST_TERRAFORM_COMMAND=$tf
+  (cd "$proj" && "$KEST" swoop init live/dev >/dev/null 2>&1)
+
+  out=$(cd "$proj" && "$KEST" swoop apply live/dev --plan --force 2>&1 || true)
+  assert_contains "$tf: apply --plan without a plan refuses" "no saved plan" "$out"
+
+  out=$(cd "$proj" && "$KEST" swoop plan live/dev --summary 2>/dev/null || true)
+  assert_contains "$tf: summary lists the resource" "+   terraform_data.app" "$out"
+  assert_contains "$tf: summary counts" "Plan: 1 to add, 0 to change, 0 to destroy." "$out"
+  assert_not_contains "$tf: summary omits full plan output" "will be created" "$out"
+
+  sed -i 's/1.0.0/2.0.0/' "$proj/iac/live/dev/main.tf"
+  out=$(cd "$proj" && "$KEST" swoop apply live/dev --plan --force 2>&1 || true)
+  assert_contains "$tf: config edit after plan is stale" "root config changed since the plan" "$out"
+
+  (cd "$proj" && "$KEST" swoop plan live/dev --out >/dev/null 2>&1)
+  out=$(cd "$proj" && "$KEST" swoop apply live/dev --plan --force 2>&1 || true)
+  assert_contains "$tf: apply --plan applies without prompting" "1 added" "$out"
+  if [[ -e $proj/iac/live/dev/.terraform/kest.tfplan ]]; then
+    fail "$tf: applied plan is removed" "no planfile" "planfile present"
+  else
+    ok "$tf: applied plan is removed"
+  fi
+
+  sed -i 's/2.0.0/3.0.0/' "$proj/iac/live/dev/main.tf"
+  out=$(cd "$proj" && "$KEST" swoop plan live/dev --summary 2>/dev/null || true)
+  assert_contains "$tf: update shows changed attribute" 'input.version: "2.0.0" → "3.0.0"' "$out"
+  assert_not_contains "$tf: summary masks sensitive values" "hunter2" "$out"
+  unset KEST_TERRAFORM_COMMAND
+done
+
 # ── summary ────────────────────────────────────────────────────────────────
 
 echo

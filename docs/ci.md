@@ -67,6 +67,12 @@ worktree; there is no `--force` in CI.
 Discovery honors `.kestconfig` (`terraform.command`, `terraform.iac_dir`), so
 commit it at the repo root.
 
+`kestci plan <target> --out` saves the plan to `.terraform/kest.tfplan` (plus a
+`.json` sidecar) and `kestci apply <target> --plan` applies exactly that file.
+To apply in a later job, carry both files across as an artifact. The apply job
+must check out the same commit, or kest refuses the plan as stale.
+`--summary` prints one line per changed resource, which fits in a PR comment.
+
 ## Patterns
 
 - **PR plan → apply on merge** — [`examples/ci/github-plan-apply.yml`](examples/ci/github-plan-apply.yml).
@@ -91,7 +97,7 @@ above and are tracked in [roadmap.md](roadmap.md):
   for "No changes" rather than reading an exit code.
 - **State is local-only.** `kestci` records plan/apply timestamps to swoop
   state, which is ephemeral on a runner — don't rely on it across jobs. For PR
-  feedback, surface plan output as a comment/artifact in the workflow.
+  feedback, post `kestci plan --summary` output as a comment.
 
 ## A note on self-hosted / Gitea
 
