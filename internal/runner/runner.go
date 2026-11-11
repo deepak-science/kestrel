@@ -26,6 +26,9 @@ type Options struct {
 	// directly and Result.Stdout is empty.
 	CaptureStdout bool
 
+	// Silent suppresses streaming stdout to os.Stdout; use with CaptureStdout.
+	Silent bool
+
 	// Stdin overrides the command's stdin. Default os.Stdin.
 	Stdin io.Reader
 }
@@ -61,9 +64,12 @@ func RunWithOpts(name string, args []string, opts Options) (*Result, error) {
 	}
 
 	var stdoutBuf bytes.Buffer
-	if opts.CaptureStdout {
+	switch {
+	case opts.CaptureStdout && opts.Silent:
+		cmd.Stdout = &stdoutBuf
+	case opts.CaptureStdout:
 		cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	} else {
+	default:
 		cmd.Stdout = os.Stdout
 	}
 

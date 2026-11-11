@@ -9,7 +9,7 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 ### P0 — small, unblocks non-interactive use
 
 - **SSO fail-fast without a TTY — DONE.** With `auto_sso_login` on and no TTY (agent, pipe, cron), `awslogin.EnsureSession` used to open a browser flow and block forever. It now returns the `aws sso login --profile <p>` command to run and exits non-zero.
-- **`kest deploy --wait`.** Every deploy needed a hand-run `kubectl rollout status` per workload. Helm already waits via `--atomic`; manifest deploys don't. Want `--wait[=timeout]`: after `kubectl apply`, run `rollout status` for every Deployment/StatefulSet/DaemonSet in the applied set, and print the resulting image per workload. Candidate default-on for manifest deploys.
+- **`kest deploy --wait` — DONE.** Manifest deploys run `rollout status` on every Deployment/StatefulSet/DaemonSet after apply and print each workload's images (`--wait-timeout`, default 5m). Open: make it default-on for manifest deploys.
 
 ### P1 — reviewed == applied
 

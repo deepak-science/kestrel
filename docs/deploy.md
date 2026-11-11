@@ -79,6 +79,7 @@ non-AWS clusters.
 kest deploy gitea                    # kubectl apply -f k8s-manifests/gitea/
 kest deploy homepage                 # helm upgrade --install homepage charts/app …
 kest deploy homepage --diff          # read-only preview: helm --dry-run / kubectl diff
+kest deploy gitea --wait             # apply, then wait for every workload rollout
 kest deploy --all                    # every app
 kest deploy --all --target homelab   # every app on a target
 kest deploy gitea -- --server-side   # pass extra args straight to kubectl/helm
@@ -88,6 +89,13 @@ kest deploy gitea --force            # bypass guards (CI-only, clean-worktree, b
 `--diff` is the plan analog: `helm upgrade --dry-run` for charts, `kubectl diff`
 for manifests (a present diff exits non-zero — kest treats that as "there's a
 diff", not a failure). It's read-only and skips the guard stack.
+
+`--wait` (manifest deploys) runs `kubectl rollout status` on every Deployment,
+StatefulSet and DaemonSet in the manifest dir after the apply, then prints a
+summary with each workload's images. Every workload is waited on even if one
+fails; any failure exits non-zero. `--wait-timeout` sets the per-workload
+timeout (default `5m`). Helm deploys already wait via `--atomic`, so `--wait`
+is a no-op there. Works the same on `kestci deploy`.
 
 ### Guards
 

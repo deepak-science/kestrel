@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/deepak-science/kestrel/internal/deploy"
 	"github.com/deepak-science/kestrel/internal/guard"
@@ -15,6 +16,8 @@ var (
 	deployAllApps    bool
 	deployTargetFltr string
 	deployDiff       bool
+	deployWait       bool
+	deployWaitTO     time.Duration
 )
 
 var deployCmd = &cobra.Command{
@@ -84,7 +87,7 @@ func deploySingleApp(name string, extra []string) error {
 	}
 
 	slog.Info("deploying app", "app", name, "kind", d.Kind(), "target", d.Target, "action", action)
-	_, err = deploy.Execute(cfg, name, d, res, action, deploy.Policy{PrintContext: true}, extra)
+	_, err = deploy.Execute(cfg, name, d, res, action, deploy.Policy{PrintContext: true, Wait: waitTimeout()}, extra)
 	return err
 }
 
@@ -123,5 +126,15 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployAllApps, "all", false, "deploy all configured apps")
 	deployCmd.Flags().StringVar(&deployTargetFltr, "target", "", "filter apps by target (used with --all)")
 	deployCmd.Flags().BoolVar(&deployDiff, "diff", false, "preview changes (kubectl diff / helm --dry-run) without applying")
+	deployCmd.Flags().BoolVar(&deployWait, "wait", false, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images")
+	deployCmd.Flags().DurationVar(&deployWaitTO, "wait-timeout", 5*time.Minute, "per-workload rollout timeout for --wait")
 	rootCmd.AddCommand(deployCmd)
+}
+
+// waitTimeout is the rollout wait for deploy.Policy; zero when --wait is unset.
+func waitTimeout() time.Duration {
+	if !deployWait {
+		return 0
+	}
+	return deployWaitTO
 }
