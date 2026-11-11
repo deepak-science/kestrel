@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/deepak-science/kestrel/internal/config"
 	"github.com/deepak-science/kestrel/internal/runner"
@@ -44,6 +45,9 @@ type Policy struct {
 	PrintContext bool
 	// Out is where the context block is written. Defaults to os.Stderr.
 	Out io.Writer
+	// Wait, for manifest applies, runs rollout status on each workload with this per-workload timeout.
+	// Zero skips it. Helm applies already wait via --atomic.
+	Wait time.Duration
 }
 
 func (p Policy) out() io.Writer {
@@ -128,17 +132,22 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		args = kubectlArgs(d.Manifests, res, d.Namespace, action == ActionDiff, extra)
 	}
 
-	result, err := runner.RunWithOpts(command, args, runner.Options{
-		Dir: projectRoot(cfg),
-		Env: env,
-	})
+	opts := runner.Options{Dir: projectRoot(cfg), Env: env}
+	result, err := runner.RunWithOpts(command, args, opts)
 	out := &ExecResult{ExitCode: result.ExitCode}
 
 	// kubectl diff exits 1 when differences exist; higher codes are real errors.
 	if d.Kind() == config.DeployManifest && action == ActionDiff && result.ExitCode == 1 {
 		return out, nil
 	}
-	return out, err
+	if err != nil {
+		return out, err
+	}
+
+	if d.Kind() == config.DeployManifest && action == ActionApply && pol.Wait > 0 {
+		return out, waitForRollouts(d.Manifests, res, d.Namespace, pol.Wait, opts, pol.out())
+	}
+	return out, nil
 }
 
 // projectRoot returns the directory containing the loaded .kestconfig, or the
