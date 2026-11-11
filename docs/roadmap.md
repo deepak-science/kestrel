@@ -23,7 +23,12 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
   - No-op objects print `configured` on every apply (e.g. a PersistentVolume with defaulted fields) though `kubectl diff` is empty, which hides real drift.
   - It only prunes fields recorded in `last-applied`, so a field set by a live `kubectl patch` survives a re-apply of the manifest. A "reconcile back to git" deploy silently left a patched `nodeSelector` in place.
   
-  `kubectl apply --server-side --field-manager=kest` (with `--force-conflicts` behind a flag) fixes both: unchanged objects report `unchanged`, and kest owns its fields. Then summarize output as "N changed, M unchanged". Needs a one-time migration note: the first SSA run over CSA-managed objects takes over `last-applied` fields, which kubectl handles, but a conflicting manager (e.g. a field owned by a controller) needs `--force-conflicts`.
+  **DONE as opt-in `server_side: true`** (plus `--force-conflicts`). Verified on a live cluster, some of the original assumptions were wrong:
+  - kubectl prints `serverside-applied` for every object, changed or not. kest instead derives created/changed/unchanged from `resourceVersion` before vs after, since a no-op apply doesn't bump it, and prints "N created, M changed, K unchanged".
+  - SSA does **not** fix the patched-`nodeSelector` case. A field set by another manager that the manifest never mentions survives SSA too, and `diff --server-side` doesn't show it. SSA does fail loudly with a conflict when someone live-edits a field kest manages; `--force-conflicts` reverts it.
+  - CSA → SSA migration was a clean no-op on objects last applied client-side.
+
+  Open: make `server_side` the default (a global setting, then flip it). Detecting foreign-manager fields would need a `managedFields` audit, e.g. a `--drift` report listing fields owned by managers other than `kest` and known controllers.
 - **Prune deleted manifests.** Removing a file from a manifest dir leaves the object running; it had to be deleted by hand. `kubectl apply --prune` is legacy and dangerous; ApplySets (`--applyset`, `KUBECTL_APPLYSET=true`) are the modern path. Opt-in per deploy entry (`prune: true`), always shown in `--diff`. Higher risk, so after SSA lands.
 
 ### P2 — scoping and rituals

@@ -85,7 +85,7 @@ func TestHelmArgs_SetDeterministic(t *testing.T) {
 
 func TestKubectlArgs_Apply(t *testing.T) {
 	res := Resolution{KubeContext: "my-cluster"}
-	got := kubectlArgs("k8s-manifests/gitea", res, "", false, nil)
+	got := kubectlArgs("k8s-manifests/gitea", res, "", kubectlOpts{}, nil)
 	want := []string{"apply", "-f", "k8s-manifests/gitea", "--context", "my-cluster"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("kubectlArgs mismatch\n got: %v\nwant: %v", got, want)
@@ -94,16 +94,32 @@ func TestKubectlArgs_Apply(t *testing.T) {
 
 func TestKubectlArgs_Diff(t *testing.T) {
 	res := Resolution{KubeContext: "my-cluster", Kubeconfig: "/tmp/kc"}
-	got := kubectlArgs("k8s-manifests/gitea", res, "gitea", true, []string{"--server-side"})
+	got := kubectlArgs("k8s-manifests/gitea", res, "gitea", kubectlOpts{Diff: true}, []string{"--validate=strict"})
 	want := []string{
 		"diff", "-f", "k8s-manifests/gitea",
 		"--context", "my-cluster",
 		"--kubeconfig", "/tmp/kc",
 		"--namespace", "gitea",
-		"--server-side",
+		"--validate=strict",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("kubectlArgs diff mismatch\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestKubectlArgs_ServerSide(t *testing.T) {
+	res := Resolution{KubeContext: "my-cluster"}
+	got := kubectlArgs("k8s/app", res, "", kubectlOpts{ServerSide: true, ForceConflicts: true, JSON: true}, nil)
+	want := []string{"apply", "-f", "k8s/app", "--context", "my-cluster", "--server-side", "--field-manager=kest", "--force-conflicts", "-o", "json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("apply mismatch\n got: %v\nwant: %v", got, want)
+	}
+
+	// diff takes no -o; it must still diff as kest's field manager.
+	got = kubectlArgs("k8s/app", res, "", kubectlOpts{Diff: true, ServerSide: true, JSON: true}, nil)
+	want = []string{"diff", "-f", "k8s/app", "--context", "my-cluster", "--server-side", "--field-manager=kest"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("diff mismatch\n got: %v\nwant: %v", got, want)
 	}
 }
 
@@ -190,6 +206,8 @@ func TestDeployKindAndValidate(t *testing.T) {
 		{"neither", config.Deploy{Target: "t"}, "", true},
 		{"both", config.Deploy{Chart: "c", Manifests: "m", Target: "t"}, "", true},
 		{"no-target", config.Deploy{Chart: "c"}, config.DeployHelm, true},
+		{"server-side-manifest", config.Deploy{Manifests: "k8s/app", Target: "t", ServerSide: true}, config.DeployManifest, false},
+		{"server-side-helm", config.Deploy{Chart: "c", Target: "t", ServerSide: true}, config.DeployHelm, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

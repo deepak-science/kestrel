@@ -23,10 +23,12 @@ func (w Workload) ref() string { return strings.ToLower(w.Kind) + "/" + w.Name }
 var rolloutKinds = map[string]bool{"Deployment": true, "StatefulSet": true, "DaemonSet": true}
 
 type kubeObject struct {
-	Kind     string `json:"kind"`
-	Metadata struct {
-		Name      string `json:"name"`
-		Namespace string `json:"namespace"`
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Metadata   struct {
+		Name            string `json:"name"`
+		Namespace       string `json:"namespace"`
+		ResourceVersion string `json:"resourceVersion"`
 	} `json:"metadata"`
 	Spec struct {
 		Template struct {
@@ -43,13 +45,9 @@ type kubeObject struct {
 // parseWorkloads extracts rollout-tracked workloads from `kubectl get -o json`
 // output, which is a List for multiple objects and a bare object for one.
 func parseWorkloads(data []byte) ([]Workload, error) {
-	var obj kubeObject
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return nil, fmt.Errorf("parse kubectl get output: %w", err)
-	}
-	objs := []kubeObject{obj}
-	if obj.Kind == "List" {
-		objs = obj.Items
+	objs, err := parseObjects(data)
+	if err != nil {
+		return nil, err
 	}
 
 	var out []Workload
@@ -64,6 +62,21 @@ func parseWorkloads(data []byte) ([]Workload, error) {
 		out = append(out, w)
 	}
 	return out, nil
+}
+
+// parseObjects flattens `kubectl ... -o json` output: a List, a bare object, or nothing (get --ignore-not-found with no matches).
+func parseObjects(data []byte) ([]kubeObject, error) {
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, nil
+	}
+	var obj kubeObject
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, fmt.Errorf("parse kubectl output: %w", err)
+	}
+	if obj.Kind == "List" {
+		return obj.Items, nil
+	}
+	return []kubeObject{obj}, nil
 }
 
 func clusterArgs(res Resolution) []string {

@@ -17,6 +17,7 @@ var (
 	deployDiff       bool
 	deployWait       bool
 	deployWaitTO     time.Duration
+	deployForceConf  bool
 )
 
 var deployCmd = &cobra.Command{
@@ -78,9 +79,10 @@ func ciDeploySingleApp(name string, extra []string) error {
 	}
 
 	_, err = deploy.Execute(cfg, name, d, res, action, deploy.Policy{
-		Ambient:      true,
-		PrintContext: true,
-		Wait:         waitTimeout(),
+		Ambient:        true,
+		PrintContext:   true,
+		Wait:           waitTimeout(),
+		ForceConflicts: deployForceConf,
 	}, extra)
 	return err
 }
@@ -109,6 +111,7 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployDiff, "diff", false, "preview changes (kubectl diff / helm --dry-run) without applying")
 	deployCmd.Flags().BoolVar(&deployWait, "wait", false, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images")
 	deployCmd.Flags().DurationVar(&deployWaitTO, "wait-timeout", 5*time.Minute, "per-workload rollout timeout for --wait")
+	deployCmd.Flags().BoolVar(&deployForceConf, "force-conflicts", false, "server_side deploys: take ownership of fields another field manager holds, reverting live edits to them")
 	rootCmd.AddCommand(deployCmd)
 }
 
