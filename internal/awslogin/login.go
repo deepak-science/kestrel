@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+
+	"golang.org/x/term"
 )
 
 // Overridable in tests.
@@ -56,7 +58,7 @@ func stsSessionValid(profile string) bool {
 	return cmd.Run() == nil
 }
 
+// A ModeCharDevice check isn't enough: /dev/null, the usual stdin for agents and cron, is a character device too.
 func stdinIsTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
