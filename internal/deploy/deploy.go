@@ -123,10 +123,7 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		printContext(pol.out(), name, d, res, pol)
 	}
 
-	var env map[string]string
-	if !pol.Ambient && res.AwsProfile != "" {
-		env = map[string]string{"AWS_PROFILE": res.AwsProfile}
-	}
+	env := deployEnv(res, pol)
 
 	var command string
 	var args []string
@@ -170,6 +167,13 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		return out, waitForRollouts(d.Manifests, res, d.Namespace, pol.Wait, opts, pol.out())
 	}
 	return out, nil
+}
+
+func deployEnv(res Resolution, pol Policy) map[string]string {
+	if pol.Ambient || res.AwsProfile == "" {
+		return nil
+	}
+	return map[string]string{"AWS_PROFILE": res.AwsProfile}
 }
 
 // projectRoot returns the directory containing the loaded .kestconfig, or the

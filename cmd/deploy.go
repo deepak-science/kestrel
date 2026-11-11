@@ -19,6 +19,7 @@ var (
 	deployWait       bool
 	deployWaitTO     time.Duration
 	deployForceConf  bool
+	deploySnapshot   bool
 )
 
 var deployCmd = &cobra.Command{
@@ -82,6 +83,12 @@ func deploySingleApp(name string, extra []string) error {
 	}
 
 	if action == deploy.ActionApply {
+		// Before deploy scripts, which may run migrations.
+		if deploySnapshot {
+			if err := deploy.Snapshot(cfg, name, d, res, deploy.Policy{}, snapshotTimeout); err != nil {
+				return fmt.Errorf("pre-deploy snapshot: %w", err)
+			}
+		}
 		if err := runDeployScripts(name, cfg.EffectiveDeployScriptsForDeploy(d)); err != nil {
 			return err
 		}
@@ -130,6 +137,8 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployWait, "wait", false, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images")
 	deployCmd.Flags().DurationVar(&deployWaitTO, "wait-timeout", 5*time.Minute, "per-workload rollout timeout for --wait")
 	deployCmd.Flags().BoolVar(&deployForceConf, "force-conflicts", false, "server_side deploys: take ownership of fields another field manager holds, reverting live edits to them")
+	deployCmd.Flags().BoolVar(&deploySnapshot, "snapshot", false, "before applying, snapshot every PVC in the app's namespace (see kest snapshot); abort if it fails")
+	deployCmd.Flags().DurationVar(&snapshotTimeout, "snapshot-timeout", 10*time.Minute, "how long --snapshot waits for snapshots to become readyToUse")
 	rootCmd.AddCommand(deployCmd)
 }
 
