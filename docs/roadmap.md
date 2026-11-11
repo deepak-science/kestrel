@@ -2,6 +2,35 @@
 
 Ideas captured but not scoped for the next release. Order is rough priority, not commitment.
 
+## Applier ergonomics (field feedback from a multi-app upgrade run)
+
+A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots) driven largely by an agent through `kest deploy` and `kest swoop`. kest was a correct applier throughout: no wrong-context or wrong-root applies, substring root matching always hit the intended root. All friction was at the edges — waiting, verifying, and proving that what was reviewed is what ran.
+
+### P0 — small, unblocks non-interactive use
+
+- **SSO fail-fast without a TTY — DONE.** With `auto_sso_login` on and no TTY (agent, pipe, cron), `awslogin.EnsureSession` used to open a browser flow and block forever. It now returns the `aws sso login --profile <p>` command to run and exits non-zero.
+- **`kest deploy --wait`.** Every deploy needed a hand-run `kubectl rollout status` per workload. Helm already waits via `--atomic`; manifest deploys don't. Want `--wait[=timeout]`: after `kubectl apply`, run `rollout status` for every Deployment/StatefulSet/DaemonSet in the applied set, and print the resulting image per workload. Candidate default-on for manifest deploys.
+
+### P1 — reviewed == applied
+
+- **Saved-plan apply for swoop.** `swoop apply` re-plans, so the reviewed plan isn't guaranteed to be the one that runs. Want `kest swoop plan <root> --out` (writes a planfile under the root, e.g. `.terraform/kest.tfplan`) and `kest swoop apply <root> --plan` (applies that file, refusing if missing/stale). Terraform applies a saved plan without prompting, which gives a safe `--auto-approve` for free; a bare `--auto-approve` without a planfile stays disallowed. Today the workaround is `echo yes |`.
+- **`--summary` for swoop plan.** `tofu show -json <planfile>` → print only resource addresses, action, and changed attribute paths (e.g. `~ helm_release.traefik: version 41.4.0 → 42.3.1`). Replaces grepping ANSI-stripped plan output. Builds on the planfile above; could also feed `PlanSummary` and the kestci plan-surfacing gap.
+- **`kest deploy --diff --confirm`.** Show diff, prompt, apply in one invocation instead of two. For helm, `helm diff` isn't atomic with upgrade either, so this is "same invocation", not a hard guarantee.
+
+### P1 — manifest apply fidelity
+
+- **Server-side apply for manifest deploys.** Client-side `kubectl apply` has two observed problems:
+  - No-op objects print `configured` on every apply (e.g. a PersistentVolume with defaulted fields) though `kubectl diff` is empty, which hides real drift.
+  - It only prunes fields recorded in `last-applied`, so a field set by a live `kubectl patch` survives a re-apply of the manifest. A "reconcile back to git" deploy silently left a patched `nodeSelector` in place.
+  
+  `kubectl apply --server-side --field-manager=kest` (with `--force-conflicts` behind a flag) fixes both: unchanged objects report `unchanged`, and kest owns its fields. Then summarize output as "N changed, M unchanged". Needs a one-time migration note: the first SSA run over CSA-managed objects takes over `last-applied` fields, which kubectl handles, but a conflicting manager (e.g. a field owned by a controller) needs `--force-conflicts`.
+- **Prune deleted manifests.** Removing a file from a manifest dir leaves the object running; it had to be deleted by hand. `kubectl apply --prune` is legacy and dangerous; ApplySets (`--applyset`, `KUBECTL_APPLYSET=true`) are the modern path. Opt-in per deploy entry (`prune: true`), always shown in `--diff`. Higher risk, so after SSA lands.
+
+### P2 — scoping and rituals
+
+- **`kest deploy <app> --only <name>`.** A manifest dir that bundles several apps is one deploy unit, so bumping one re-applies all. File/label filter to shrink blast radius. Lower value once SSA makes no-ops truly no-op.
+- **`kest snapshot <app>`.** Every upgrade started with hand-written snapshot CRs (PVC → volume → CR → wait ready). Generic shape: create a CSI `VolumeSnapshot` for every PVC in the deploy's namespace and wait for `readyToUse`; `deploy --snapshot` hangs it off the deploy. Open question: CSI VolumeSnapshot vs storage-specific CRDs — CSI keeps kest cluster-agnostic, but requires a snapshot class to be configured.
+
 ## Per-guard config flags (replace blanket `--force`)
 
 Today `--force` (`cmd/root.go`) bypasses all three guards in `internal/guard/guard.go` at once: `CheckCI`, `CheckCleanWorktree`, `CheckBranch`. That's coarse — quick local applies from a laptop only really need the CI guard off, not the dirty-worktree or branch ones.
