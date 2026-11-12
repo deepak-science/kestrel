@@ -36,8 +36,13 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 - **`kest deploy <app> --only <name>`.** A manifest dir that bundles several apps is one deploy unit, so bumping one re-applies all. File/label filter to shrink blast radius. Lower value once SSA makes no-ops truly no-op.
 - **`kest snapshot <app>` — DONE.** Uses generic CSI `VolumeSnapshot`, not storage-specific CRDs. It snapshots every bound PVC in the deploy's namespace, picking a class per storage driver (or `snapshot_class:`), waits for `readyToUse`, and surfaces `status.error` on timeout. It's all or nothing: an unsnapshottable bound PVC fails the run. `deploy --snapshot` runs it before deploy scripts and the apply, on kest and kestci. Open:
   - Retention: snapshots are labeled `kest/deploy=<app>` but never pruned. A `--keep N` would cover it.
-  - A per-deploy PVC allow/skip list for namespaces that mix snapshottable and local volumes.
   - Restore stays manual (PVC `dataSource`).
+- **`snapshot_skip:` — DONE.** Per-deploy globs on PVC name or `namespace/name` leave volumes out of snapshots; each skipped PVC is printed, and the all-or-nothing error points at it.
+
+## Small fixes shipped alongside
+
+- **Version-pin warnings name a fix.** A root's pin is rewritten with `kest swoop pin [target] [--version V]`, which defaults to the active binary's version and to every root when no target is given. The mismatch warning suggests `swoop pin` when the active binary is newer than the pin, or installing the pinned version otherwise, instead of "install manually". Open: `kestci` still doesn't check the pin at all (see the parity section).
+- **Runtime errors no longer print usage.** Usage text is kept for argument errors only.
 
 ## Per-guard config flags (replace blanket `--force`)
 

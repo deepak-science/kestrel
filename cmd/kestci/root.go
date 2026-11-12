@@ -27,6 +27,9 @@ var rootCmd = &cobra.Command{
 executes deploy and terraform commands. Credentials and kubeconfig come from
 the environment (OIDC, env vars, ambient ~/.kube/config).`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Args are validated by now; later errors are runtime failures, not misuse.
+		cmd.SilenceUsage = true
+
 		cleanup, err := logging.Init()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not initialize logging: %v\n", err)

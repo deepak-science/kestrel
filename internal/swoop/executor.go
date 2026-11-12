@@ -199,24 +199,16 @@ func EnsureTFVersion(command, manager string, root Root, preferredVersion string
 
 	version := preferredVersion
 	if version == "" {
-		cmd := exec.Command(command, "version")
-		cmd.Dir = root.AbsPath
-		out, err := cmd.Output()
+		v, err := ActiveTFVersion(command, root.AbsPath)
 		if err != nil {
-			return "", "", fmt.Errorf("could not detect terraform version: %w", err)
+			return "", "", err
 		}
-
-		version = ParseTFVersion(string(out))
-		if version == "" {
-			return "", "", fmt.Errorf("could not parse terraform version from output")
-		}
+		version = v
 	}
 
-	filename := VersionFileFor(manager)
-	versionFile := root.AbsPath + "/" + filename
-	if err := os.WriteFile(versionFile, []byte(version+"\n"), 0644); err != nil {
-		return "", "", fmt.Errorf("could not write %s: %w", filename, err)
+	filename, err := PinTFVersion(root, manager, version)
+	if err != nil {
+		return "", "", err
 	}
-
 	return filename, version, nil
 }

@@ -34,6 +34,8 @@ present and consistent, AWS SSO sessions are active, and project-level
 settings are in order.`,
 	// Override root's PersistentPreRunE so doctor survives broken config.
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
+
 		cleanup, err := logging.Init()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not initialize logging: %v\n", err)

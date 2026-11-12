@@ -29,6 +29,9 @@ var rootCmd = &cobra.Command{
 	Short: "Kestrel — unified helm & terraform orchestration",
 	Long:  "A CLI that wraps Helm and Terraform workflows per-project, driven by .kestconfig files.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Args are validated by now; later errors are runtime failures, not misuse.
+		cmd.SilenceUsage = true
+
 		// Set up file logging (non-fatal if it fails)
 		cleanup, err := logging.Init()
 		if err != nil {
