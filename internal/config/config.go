@@ -68,8 +68,8 @@ type Deploy struct {
 	// --- manifest source (Manifests set) ---
 	// Manifests is a directory or file applied with `kubectl apply -f`.
 	Manifests string `yaml:"manifests,omitempty"`
-	// ServerSide applies with `kubectl apply --server-side --field-manager=kest`.
-	ServerSide bool `yaml:"server_side,omitempty"`
+	// ServerSide applies with `kubectl apply --server-side --field-manager=kest`; nil means on for manifest deploys.
+	ServerSide *bool `yaml:"server_side,omitempty"`
 
 	// --- common ---
 	// Target is the deployment target (key in targets:). Required.
@@ -110,6 +110,11 @@ func (d Deploy) Kind() string {
 	}
 }
 
+// UsesServerSide reports whether a manifest deploy applies server-side, the default unless server_side: false.
+func (d Deploy) UsesServerSide() bool {
+	return d.Kind() == DeployManifest && (d.ServerSide == nil || *d.ServerSide)
+}
+
 // Validate returns an error if the deploy is not exactly one of helm/manifest
 // or is missing a target. name is the deploy's key, for the message.
 func (d Deploy) Validate(name string) error {
@@ -120,7 +125,7 @@ func (d Deploy) Validate(name string) error {
 		return fmt.Errorf("deploy %q: set only one of chart: or manifests:, not both", name)
 	case d.Target == "":
 		return fmt.Errorf("deploy %q: target is required", name)
-	case d.ServerSide && d.Chart != "":
+	case d.ServerSide != nil && *d.ServerSide && d.Chart != "":
 		return fmt.Errorf("deploy %q: server_side applies to manifests: deploys only", name)
 	}
 	for _, pat := range d.SnapshotSkip {

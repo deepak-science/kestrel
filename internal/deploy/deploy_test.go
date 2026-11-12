@@ -206,8 +206,9 @@ func TestDeployKindAndValidate(t *testing.T) {
 		{"neither", config.Deploy{Target: "t"}, "", true},
 		{"both", config.Deploy{Chart: "c", Manifests: "m", Target: "t"}, "", true},
 		{"no-target", config.Deploy{Chart: "c"}, config.DeployHelm, true},
-		{"server-side-manifest", config.Deploy{Manifests: "k8s/app", Target: "t", ServerSide: true}, config.DeployManifest, false},
-		{"server-side-helm", config.Deploy{Chart: "c", Target: "t", ServerSide: true}, config.DeployHelm, true},
+		{"server-side-manifest", config.Deploy{Manifests: "k8s/app", Target: "t", ServerSide: &on}, config.DeployManifest, false},
+		{"server-side-helm", config.Deploy{Chart: "c", Target: "t", ServerSide: &on}, config.DeployHelm, true},
+		{"server-side-off-helm", config.Deploy{Chart: "c", Target: "t", ServerSide: &off}, config.DeployHelm, false},
 		{"snapshot-skip", config.Deploy{Chart: "c", Target: "t", SnapshotSkip: []string{"nfs-*", "ns/data"}}, config.DeployHelm, false},
 		{"snapshot-skip-bad-glob", config.Deploy{Chart: "c", Target: "t", SnapshotSkip: []string{"data["}}, config.DeployHelm, true},
 	}
@@ -221,5 +222,25 @@ func TestDeployKindAndValidate(t *testing.T) {
 				t.Errorf("Validate() err = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+var on, off = true, false
+
+func TestUsesServerSide(t *testing.T) {
+	tests := []struct {
+		name string
+		d    config.Deploy
+		want bool
+	}{
+		{"manifest default", config.Deploy{Manifests: "k8s/app"}, true},
+		{"manifest opt-out", config.Deploy{Manifests: "k8s/app", ServerSide: &off}, false},
+		{"manifest explicit", config.Deploy{Manifests: "k8s/app", ServerSide: &on}, true},
+		{"helm", config.Deploy{Chart: "c"}, false},
+	}
+	for _, tt := range tests {
+		if got := tt.d.UsesServerSide(); got != tt.want {
+			t.Errorf("%s: UsesServerSide() = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

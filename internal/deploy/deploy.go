@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/deepak-science/kestrel/internal/config"
@@ -139,15 +140,15 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		command = "kubectl"
 		args = kubectlArgs(d.Manifests, res, d.Namespace, kubectlOpts{
 			Diff:           action == ActionDiff,
-			ServerSide:     d.ServerSide,
+			ServerSide:     d.UsesServerSide(),
 			ForceConflicts: pol.ForceConflicts,
 		}, extra)
 	}
 
-	opts := runner.Options{Dir: projectRoot(cfg), Env: env}
+	opts := runner.Options{Dir: projectRoot(cfg), Env: env, CaptureStderr: d.UsesServerSide()}
 	var result *runner.Result
 	var err error
-	if d.Kind() == config.DeployManifest && action == ActionApply && d.ServerSide {
+	if action == ActionApply && d.UsesServerSide() {
 		ko := kubectlOpts{ServerSide: true, ForceConflicts: pol.ForceConflicts}
 		result, err = serverSideApply(d.Manifests, res, d.Namespace, ko, extra, opts, pol.stdout(), pol.out())
 	} else {
@@ -160,6 +161,9 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		return out, nil
 	}
 	if err != nil {
+		if strings.Contains(result.Stderr, csaConflict) {
+			err = fmt.Errorf("%w\n%s", err, csaConflictHint)
+		}
 		return out, err
 	}
 
@@ -168,6 +172,13 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 	}
 	return out, nil
 }
+
+// kubectl doesn't hand client-side ownership of an atomic field (e.g. a StatefulSet's volumeClaimTemplates) to the server-side manager when the live value has defaults filled in.
+const (
+	csaConflict     = `conflict with "kubectl-client-side-apply"`
+	csaConflictHint = "the conflicting fields were last set by client-side kubectl apply (an earlier kest deploy, or kubectl apply by hand).\n" +
+		"Apply once with --force-conflicts to hand them to kest (--diff --force-conflicts previews it), or set server_side: false."
+)
 
 func deployEnv(res Resolution, pol Policy) map[string]string {
 	if pol.Ambient || res.AwsProfile == "" {

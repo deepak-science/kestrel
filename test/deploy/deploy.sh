@@ -170,12 +170,11 @@ assert_contains "all: third-party chart ran" "HELM upgrade --install authentik" 
 
 echo
 echo "▶ extra args passthrough (after --)"
-out=$(cd "$proj" && "$KEST" deploy gitea --force -- --server-side 2>&1 || true)
-assert_contains "kubectl passthrough" "--server-side" "$out"
+out=$(cd "$proj" && "$KEST" deploy gitea --force -- --validate=strict 2>&1 || true)
+assert_contains "kubectl passthrough" "--validate=strict" "$out"
 
 echo
-echo "▶ server_side: true → kubectl apply --server-side as field manager kest"
-sed -i 's|    manifests: k8s-manifests/gitea|&\n    server_side: true|' "$proj/.kestconfig"
+echo "▶ manifest deploys apply server-side as field manager kest by default"
 out=$(cd "$proj" && "$KEST" deploy gitea --force 2>&1 || true)
 assert_contains "server-side apply flags" "apply -f k8s-manifests/gitea --context my-cluster --server-side --field-manager=kest -o json" "$out"
 assert_contains "pre-apply snapshot" "KUBECTL get -f k8s-manifests/gitea" "$out"
@@ -188,7 +187,29 @@ out=$(cd "$proj" && "$KEST" deploy gitea --diff 2>&1 || true)
 assert_contains "server-side diff" "KUBECTL diff -f k8s-manifests/gitea --context my-cluster --server-side --field-manager=kest" "$out"
 out=$(cd "$proj" && "$KEST" deploy homepage --force 2>&1 || true)
 assert_not_contains "helm deploys ignore --server-side" "--server-side" "$out"
-sed -i '/server_side: true/d' "$proj/.kestconfig"
+
+echo
+echo "▶ server_side: false → client-side apply"
+sed -i 's|    manifests: k8s-manifests/gitea|&\n    server_side: false|' "$proj/.kestconfig"
+out=$(cd "$proj" && "$KEST" deploy gitea --force 2>&1 || true)
+assert_contains "client-side apply" "KUBECTL apply -f k8s-manifests/gitea --context my-cluster" "$out"
+assert_not_contains "no --server-side when opted out" "--server-side" "$out"
+out=$(cd "$proj" && "$KEST" deploy gitea --diff 2>&1 || true)
+assert_not_contains "client-side diff when opted out" "--server-side" "$out"
+sed -i '/server_side: false/d' "$proj/.kestconfig"
+
+echo
+echo "▶ --wait is on by default for manifest applies"
+out=$(cd "$proj" && "$KEST" deploy gitea --force 2>&1 || true)
+assert_contains "looks for workloads to wait on" "no Deployments/StatefulSets/DaemonSets to wait on" "$out"
+out=$(cd "$proj" && "$KEST" deploy gitea --force --wait=false 2>&1 || true)
+assert_not_contains "--wait=false skips the wait" "to wait on" "$out"
+
+echo
+echo "▶ --confirm without a terminal refuses before diffing"
+out=$(cd "$proj" && "$KEST" deploy gitea --force --confirm </dev/null 2>&1 || true)
+assert_contains "--confirm needs a terminal" "--confirm needs a terminal" "$out"
+assert_not_contains "--confirm did not diff or apply" "KUBECTL" "$out"
 
 echo
 echo "▶ guard posture: local apply without --force is refused outside CI"
