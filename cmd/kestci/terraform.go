@@ -19,28 +19,46 @@ var (
 
 func terraformCmd(action string) *cobra.Command {
 	return &cobra.Command{
-		Use:   action + " [target]",
+		Use:   action + " [target] [-- terraform flags]",
 		Short: "Run terraform " + action + " in matching root(s)",
 		Long: `Target is an exact path, a glob, or a substring matching one root; fuzzy
 matches are refused. --changed and --dir select roots instead of, or as well
-as, a target. Several roots run in sequence with a summary.`,
-		Args: cobra.MaximumNArgs(1),
+as, a target. Several roots run in sequence with a summary.
+
+Flags after -- go to terraform, as -name=value. With plan -- -detailed-exitcode,
+kestci exits 2 when any root has changes and none failed.`,
+		Args: targetArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			pos, extra := swoop.SplitPassthrough(args, cmd.ArgsLenAtDash())
 			target := ""
-			if len(args) > 0 {
-				target = args[0]
+			if len(pos) > 0 {
+				target = pos[0]
 			}
-			return runTerraformAction(action, target)
+			err := runTerraformAction(action, target, extra)
+			if errors.Is(err, swoop.ErrChanges) {
+				// Exit 2 is the signal; terraform's output already shows the changes.
+				cmd.SilenceErrors = true
+			}
+			return err
 		},
 	}
 }
 
-func runTerraformAction(action, target string) error {
+// targetArgs allows one target before "--" and anything after it.
+func targetArgs(cmd *cobra.Command, args []string) error {
+	pos, _ := swoop.SplitPassthrough(args, cmd.ArgsLenAtDash())
+	return cobra.MaximumNArgs(1)(cmd, pos)
+}
+
+func runTerraformAction(action, target string, extra []string) error {
 	if err := requireCI(); err != nil {
 		return err
 	}
 	if target == "" && tfChanged == "" && tfDir == "" {
 		return fmt.Errorf("target required (or select roots with --changed / --dir)")
+	}
+	if err := swoop.CheckPassthrough(extra); err != nil {
+		return err
 	}
 
 	// Apply-specific guards (always enforced, no --force).
@@ -87,6 +105,7 @@ func runTerraformAction(action, target string) error {
 			SavePlan:     tfSavePlan,
 			Summary:      tfSummary,
 			ApplyPlan:    tfApplyPlan,
+			ExtraArgs:    extra,
 		},
 		BatchContext: true,
 		Preflight:    ciVersionPreflight(action),

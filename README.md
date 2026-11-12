@@ -296,6 +296,7 @@ kest swoop plan --changed       # only roots with git changes
 kest swoop plan dev/vpc --out     # save the plan to .terraform/kest.tfplan
 kest swoop plan dev/vpc --summary # one line per changed resource (also saves)
 kest swoop apply dev/vpc --plan   # apply exactly the saved plan, no prompt
+kest swoop plan dev/vpc -- -detailed-exitcode  # forward flags to terraform (exit 2 on changes)
 kest swoop pin dev/vpc          # pin the root to the active terraform/tofu version
 kest swoop edit dev/vpc         # open $EDITOR in root directory
 eval "$(kest swoop cd dev/vpc)" # cd into root directory

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,7 +29,7 @@ func withPlanFlags(pol swoop.Policy) swoop.Policy {
 }
 
 var swoopInitCmd = &cobra.Command{
-	Use:   "init [target]",
+	Use:   "init [target] [-- terraform flags]",
 	Short: "Run terraform init in target root(s)",
 	Long: `Initialize terraform root directories.
 
@@ -38,18 +39,12 @@ If it matches multiple roots (via glob), they run sequentially.
 
 Use --changed to target roots with modified .tf files.
 Use --dir to filter by top-level directory.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		target := ""
-		if len(args) > 0 {
-			target = args[0]
-		}
-		return runSwoopActionCmd("init", target)
-	},
+	Args: targetArgs,
+	RunE: swoopActionRunE("init"),
 }
 
 var swoopPlanCmd = &cobra.Command{
-	Use:   "plan [target]",
+	Use:   "plan [target] [-- terraform flags]",
 	Short: "Run terraform plan in target root(s)",
 	Long: `Plan changes for terraform root directories.
 
@@ -63,18 +58,12 @@ Use --dir to filter by top-level directory.
 Use --out to save the plan to .terraform/kest.tfplan in each root, for
 "kest swoop apply --plan". --summary prints one line per changed resource
 (with changed attributes) instead of the full plan, and also saves it.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		target := ""
-		if len(args) > 0 {
-			target = args[0]
-		}
-		return runSwoopActionCmd("plan", target)
-	},
+	Args: targetArgs,
+	RunE: swoopActionRunE("plan"),
 }
 
 var swoopApplyCmd = &cobra.Command{
-	Use:   "apply [target]",
+	Use:   "apply [target] [-- terraform flags]",
 	Short: "Run terraform apply in target root(s)",
 	Long: `Apply changes for terraform root directories.
 
@@ -93,18 +82,37 @@ profile changed since the plan.
 Apply has additional safety guards:
 - Requires --force when not in CI
 - Checks for a clean git worktree`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		target := ""
-		if len(args) > 0 {
-			target = args[0]
-		}
-		return runSwoopActionCmd("apply", target)
-	},
+	Args: targetArgs,
+	RunE: swoopActionRunE("apply"),
 }
 
-// runSwoopActionCmd selects roots from the target plus --changed/--dir and runs the action on them.
-func runSwoopActionCmd(action, target string) error {
+// targetArgs allows one target before "--" and anything after it.
+func targetArgs(cmd *cobra.Command, args []string) error {
+	pos, _ := swoop.SplitPassthrough(args, cmd.ArgsLenAtDash())
+	return cobra.MaximumNArgs(1)(cmd, pos)
+}
+
+func swoopActionRunE(action string) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		pos, extra := swoop.SplitPassthrough(args, cmd.ArgsLenAtDash())
+		target := ""
+		if len(pos) > 0 {
+			target = pos[0]
+		}
+		err := runSwoopActionCmd(action, target, extra)
+		if errors.Is(err, swoop.ErrChanges) {
+			// Exit 2 is the signal; terraform's output already shows the changes.
+			cmd.SilenceErrors = true
+		}
+		return err
+	}
+}
+
+// runSwoopActionCmd selects roots from the target plus --changed/--dir and runs the action on them, forwarding extra to terraform.
+func runSwoopActionCmd(action, target string, extra []string) error {
+	if err := swoop.CheckPassthrough(extra); err != nil {
+		return err
+	}
 	baseDir, err := resolveBaseDir()
 	if err != nil {
 		return err
@@ -148,7 +156,7 @@ func runSwoopActionCmd(action, target string) error {
 		Cfg:         cfg,
 		BaseDir:     baseDir,
 		Environment: environment,
-		Policy:      withPlanFlags(swoop.Policy{PrintContext: true}),
+		Policy:      withPlanFlags(swoop.Policy{PrintContext: true, ExtraArgs: extra}),
 		Preflight:   localVersionPreflight,
 	}
 	return r.Run(action, matches)
