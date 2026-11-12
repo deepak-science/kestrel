@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/deepak-science/kestrel/internal/config"
 	"github.com/deepak-science/kestrel/internal/deploy"
 	"github.com/deepak-science/kestrel/internal/guard"
 	"github.com/deepak-science/kestrel/internal/runner"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -20,6 +23,7 @@ var (
 	deployWaitTO     time.Duration
 	deployForceConf  bool
 	deploySnapshot   bool
+	deployConfirm    bool
 )
 
 var deployCmd = &cobra.Command{
@@ -65,7 +69,7 @@ func deploySingleApp(name string, extra []string) error {
 	}
 
 	action := deploy.ActionApply
-	if deployDiff {
+	if deployDiff && !deployConfirm {
 		action = deploy.ActionDiff
 	}
 
@@ -82,6 +86,15 @@ func deploySingleApp(name string, extra []string) error {
 		}
 	}
 
+	printContext := true
+	if deployConfirm {
+		apply, err := diffAndConfirm(name, d, res, extra)
+		if err != nil || !apply {
+			return err
+		}
+		printContext = false
+	}
+
 	if action == deploy.ActionApply {
 		// Before deploy scripts, which may run migrations.
 		if deploySnapshot {
@@ -95,8 +108,35 @@ func deploySingleApp(name string, extra []string) error {
 	}
 
 	slog.Info("deploying app", "app", name, "kind", d.Kind(), "target", d.Target, "action", action)
-	_, err = deploy.Execute(cfg, name, d, res, action, deploy.Policy{PrintContext: true, Wait: waitTimeout(), ForceConflicts: deployForceConf}, extra)
+	_, err = deploy.Execute(cfg, name, d, res, action, deploy.Policy{PrintContext: printContext, Wait: waitTimeout(), ForceConflicts: deployForceConf}, extra)
 	return err
+}
+
+// diffAndConfirm runs the diff and asks before applying.
+// A manifest diff with no differences skips the apply; helm's dry-run can't tell, so it always asks.
+func diffAndConfirm(name string, d config.Deploy, res deploy.Resolution, extra []string) (bool, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return false, fmt.Errorf("--confirm needs a terminal to ask; run --diff, then deploy without it")
+	}
+	out, err := deploy.Execute(cfg, name, d, res, deploy.ActionDiff, deploy.Policy{PrintContext: true}, extra)
+	if err != nil {
+		return false, err
+	}
+	if d.Kind() == config.DeployManifest && out.ExitCode == 0 {
+		fmt.Fprintf(os.Stderr, "%s: no changes, nothing to apply\n", name)
+		return false, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "\nApply %s to %s? [y/N] ", name, d.Target)
+	var answer string
+	_, _ = fmt.Scanln(&answer)
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer != "y" && answer != "yes" {
+		fmt.Fprintf(os.Stderr, "%s: not applied\n", name)
+		return false, nil
+	}
+	fmt.Fprintln(os.Stderr)
+	return true, nil
 }
 
 func deployAllAppsRun(extra []string) error {
@@ -134,7 +174,8 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployAllApps, "all", false, "deploy all configured apps")
 	deployCmd.Flags().StringVar(&deployTargetFltr, "target", "", "filter apps by target (used with --all)")
 	deployCmd.Flags().BoolVar(&deployDiff, "diff", false, "preview changes (kubectl diff / helm --dry-run) without applying")
-	deployCmd.Flags().BoolVar(&deployWait, "wait", false, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images")
+	deployCmd.Flags().BoolVar(&deployWait, "wait", true, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images (--wait=false to skip)")
+	deployCmd.Flags().BoolVar(&deployConfirm, "confirm", false, "show the diff, ask, then apply in one run (needs a terminal)")
 	deployCmd.Flags().DurationVar(&deployWaitTO, "wait-timeout", 5*time.Minute, "per-workload rollout timeout for --wait")
 	deployCmd.Flags().BoolVar(&deployForceConf, "force-conflicts", false, "server_side deploys: take ownership of fields another field manager holds, reverting live edits to them")
 	deployCmd.Flags().BoolVar(&deploySnapshot, "snapshot", false, "before applying, snapshot every PVC in the app's namespace (see kest snapshot); abort if it fails")

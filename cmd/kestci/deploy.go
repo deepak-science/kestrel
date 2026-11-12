@@ -117,7 +117,7 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployAllApps, "all", false, "deploy all configured apps")
 	deployCmd.Flags().StringVar(&deployTargetFltr, "target", "", "filter apps by target (used with --all)")
 	deployCmd.Flags().BoolVar(&deployDiff, "diff", false, "preview changes (kubectl diff / helm --dry-run) without applying")
-	deployCmd.Flags().BoolVar(&deployWait, "wait", false, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images")
+	deployCmd.Flags().BoolVar(&deployWait, "wait", true, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images (--wait=false to skip)")
 	deployCmd.Flags().DurationVar(&deployWaitTO, "wait-timeout", 5*time.Minute, "per-workload rollout timeout for --wait")
 	deployCmd.Flags().BoolVar(&deployForceConf, "force-conflicts", false, "server_side deploys: take ownership of fields another field manager holds, reverting live edits to them")
 	deployCmd.Flags().BoolVar(&deploySnapshot, "snapshot", false, "before applying, snapshot every PVC in the app's namespace; abort if it fails")

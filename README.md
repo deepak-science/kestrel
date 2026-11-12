@@ -254,9 +254,10 @@ automatically — a helm chart (`helm upgrade --install`) or a directory of raw
 manifests (`kubectl apply -f`):
 
 ```sh
-kest deploy gitea                    # kubectl apply -f k8s-manifests/gitea/
+kest deploy gitea                    # server-side kubectl apply, then wait for rollouts
 kest deploy homepage                 # helm upgrade --install (local or third-party chart)
 kest deploy homepage --diff          # read-only preview (helm --dry-run / kubectl diff)
+kest deploy gitea --confirm          # diff, ask, then apply in one run
 kest deploy --all --target homelab   # all apps on a target
 kest deploy gitea --snapshot         # CSI-snapshot the app's PVCs first, abort if that fails
 kest snapshot gitea                  # just the snapshots

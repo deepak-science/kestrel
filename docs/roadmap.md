@@ -9,13 +9,13 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 ### P0 — small, unblocks non-interactive use
 
 - **SSO fail-fast without a TTY — DONE.** With `auto_sso_login` on and no TTY (agent, pipe, cron), `awslogin.EnsureSession` used to open a browser flow and block forever. It now returns the `aws sso login --profile <p>` command to run and exits non-zero.
-- **`kest deploy --wait` — DONE.** Manifest deploys run `rollout status` on every Deployment/StatefulSet/DaemonSet after apply and print each workload's images (`--wait-timeout`, default 5m). Open: make it default-on for manifest deploys.
+- **`kest deploy --wait` — DONE.** Manifest deploys run `rollout status` on every Deployment/StatefulSet/DaemonSet after apply and print each workload's images (`--wait-timeout`, default 5m). On by default; `--wait=false` skips it.
 
 ### P1 — reviewed == applied
 
 - **Saved-plan apply for swoop — DONE.** `swoop plan --out` writes `.terraform/kest.tfplan` plus a sidecar recording git HEAD, a hash of the root's `.tf`/`.tfvars`/lock files, and the AWS profile. `swoop apply --plan` refuses if the planfile is missing or any of those changed, prints the summary, then applies without a prompt; the planfile is removed after a successful apply. Terraform itself rejects plans whose state has moved. Same flags on `kestci`. A bare `--auto-approve` stays unsupported. Open: local modules outside the root are covered only by HEAD + the clean-worktree guard, so a `--force` apply with dirty module edits isn't caught (terraform still applies the reviewed plan, just not those edits).
 - **`--summary` for swoop plan — DONE.** Renders `show -json` as one line per changed resource with changed attribute paths, masking sensitive values; implies `--out`. Open: feed it into `PlanSummary`/state instead of the parsed plan line.
-- **`kest deploy --diff --confirm`.** Show diff, prompt, apply in one invocation instead of two. For helm, `helm diff` isn't atomic with upgrade either, so this is "same invocation", not a hard guarantee.
+- **`kest deploy --confirm` — DONE.** Diff, prompt, apply in one invocation (`--diff --confirm` is the same). A manifest diff with no differences skips the apply; helm always asks. For helm this is "same invocation", not atomic. kest only; kestci has no prompt.
 
 ### P1 — manifest apply fidelity
 
@@ -28,7 +28,8 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
   - SSA does **not** fix the patched-`nodeSelector` case. A field set by another manager that the manifest never mentions survives SSA too, and `diff --server-side` doesn't show it. SSA does fail loudly with a conflict when someone live-edits a field kest manages; `--force-conflicts` reverts it.
   - CSA → SSA migration was a clean no-op on objects last applied client-side.
 
-  Open: make `server_side` the default (a global setting, then flip it). Detecting foreign-manager fields would need a `managedFields` audit, e.g. a `--drift` report listing fields owned by managers other than `kest` and known controllers.
+  **Now the default** for manifest deploys (`server_side: false` opts out). A server-side diff across 15 real manifest deploys found one conflict: a StatefulSet's `volumeClaimTemplates`, an atomic field that kubectl doesn't hand from client-side to server-side ownership once defaults are filled in. kest now explains that error and points at a one-time `--force-conflicts`.
+  Open: detecting foreign-manager fields would need a `managedFields` audit, e.g. a `--drift` report listing fields owned by managers other than `kest` and known controllers.
 - **Prune deleted manifests.** Removing a file from a manifest dir leaves the object running; it had to be deleted by hand. `kubectl apply --prune` is legacy and dangerous; ApplySets (`--applyset`, `KUBECTL_APPLYSET=true`) are the modern path. Opt-in per deploy entry (`prune: true`), always shown in `--diff`. Higher risk, so after SSA lands.
 
 ### P2 — scoping and rituals

@@ -31,12 +31,18 @@ type Options struct {
 
 	// Stdin overrides the command's stdin. Default os.Stdin.
 	Stdin io.Reader
+
+	// CaptureStderr also keeps stderr in Result.Stderr; it still streams to os.Stderr.
+	CaptureStderr bool
 }
 
 // Result returns details from a RunWithOpts call.
 type Result struct {
 	// Stdout is the captured stdout. Empty unless Options.CaptureStdout was set.
 	Stdout string
+
+	// Stderr is the captured stderr. Empty unless Options.CaptureStderr was set.
+	Stderr string
 
 	// ExitCode is the process exit code (-1 if the process did not start).
 	ExitCode int
@@ -48,7 +54,11 @@ type Result struct {
 func RunWithOpts(name string, args []string, opts Options) (*Result, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = opts.Dir
+	var stderrBuf bytes.Buffer
 	cmd.Stderr = os.Stderr
+	if opts.CaptureStderr {
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	}
 
 	if opts.Stdin != nil {
 		cmd.Stdin = opts.Stdin
@@ -83,7 +93,7 @@ func RunWithOpts(name string, args []string, opts Options) (*Result, error) {
 	start := time.Now()
 	err := cmd.Run()
 
-	result := &Result{Stdout: stdoutBuf.String(), ExitCode: -1}
+	result := &Result{Stdout: stdoutBuf.String(), Stderr: stderrBuf.String(), ExitCode: -1}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}
