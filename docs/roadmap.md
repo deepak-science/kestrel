@@ -34,7 +34,10 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 ### P2 — scoping and rituals
 
 - **`kest deploy <app> --only <name>`.** A manifest dir that bundles several apps is one deploy unit, so bumping one re-applies all. File/label filter to shrink blast radius. Lower value once SSA makes no-ops truly no-op.
-- **`kest snapshot <app>`.** Every upgrade started with hand-written snapshot CRs (PVC → volume → CR → wait ready). Generic shape: create a CSI `VolumeSnapshot` for every PVC in the deploy's namespace and wait for `readyToUse`; `deploy --snapshot` hangs it off the deploy. Open question: CSI VolumeSnapshot vs storage-specific CRDs — CSI keeps kest cluster-agnostic, but requires a snapshot class to be configured.
+- **`kest snapshot <app>` — DONE.** Uses generic CSI `VolumeSnapshot`, not storage-specific CRDs. It snapshots every bound PVC in the deploy's namespace, picking a class per storage driver (or `snapshot_class:`), waits for `readyToUse`, and surfaces `status.error` on timeout. It's all or nothing: an unsnapshottable bound PVC fails the run. `deploy --snapshot` runs it before deploy scripts and the apply, on kest and kestci. Open:
+  - Retention: snapshots are labeled `kest/deploy=<app>` but never pruned. A `--keep N` would cover it.
+  - A per-deploy PVC allow/skip list for namespaces that mix snapshottable and local volumes.
+  - Restore stays manual (PVC `dataSource`).
 
 ## Per-guard config flags (replace blanket `--force`)
 

@@ -62,6 +62,7 @@ Fields, per deploy:
 | `namespace` | both | `--namespace` (+ `--create-namespace` for helm) |
 | `target` | both | **required** — key in `targets:` |
 | `deploy_scripts` | both | override `helm.deploy_scripts` (`nil` = inherit, `[]` = skip) |
+| `snapshot_class` | both | VolumeSnapshotClass for `kest snapshot` / `--snapshot` (default: per-driver default class) |
 
 ### Target resolution (cluster-agnostic)
 
@@ -82,6 +83,8 @@ kest deploy homepage                 # helm upgrade --install homepage charts/ap
 kest deploy homepage --diff          # read-only preview: helm --dry-run / kubectl diff
 kest deploy gitea --wait             # apply, then wait for every workload rollout
 kest deploy gitea --force-conflicts  # server_side deploys: take back fields edited live
+kest deploy gitea --snapshot         # snapshot the app's volumes first; abort if that fails
+kest snapshot gitea                  # just the snapshots
 kest deploy --all                    # every app
 kest deploy --all --target homelab   # every app on a target
 kest deploy gitea -- --validate=strict  # pass extra args straight to kubectl/helm
@@ -117,6 +120,23 @@ What changes compared with client-side apply:
 - **Fields other managers added and the manifest never mentions are left alone.** For example, a `nodeSelector` patched in by hand survives a re-apply, and `--diff` won't show it. Neither client-side nor server-side apply reconciles these fields; delete them by hand or recreate the object.
 
 Switching an existing deploy is a no-op apply: kubectl migrates the client-side `last-applied` ownership to `kest` on the first server-side run. Don't switch back afterwards. Client-side apply on a server-side-managed object warns about the missing annotation and re-adds it.
+
+### Volume snapshots (`kest snapshot`, `--snapshot`)
+
+`kest snapshot <app>` takes a CSI `VolumeSnapshot` (`snapshot.storage.k8s.io/v1`) of every bound PVC in the app's namespace. The namespace is the deploy's `namespace:`, or for manifest deploys without one, the namespaces of the manifests' existing objects. Helm deploys need `namespace:` set. kest then waits until each snapshot is `readyToUse` (`--timeout`, default `10m`):
+
+```
+snapshot: gitea/data-gitea-0 → data-gitea-0-kest-20261111-142530 (class csi-snapclass)
+snapshot: 1 ready
+```
+
+`kest deploy --snapshot` (and `kestci deploy --snapshot`) does the same before an apply, ahead of any deploy scripts, and aborts the deploy if a snapshot fails or times out. `--diff` never snapshots.
+
+- **Requirements:** the cluster needs the CSI snapshot CRDs and snapshot controller ([external-snapshotter](https://github.com/kubernetes-csi/external-snapshotter)) plus a CSI driver that supports snapshots. kest stays storage-agnostic; it doesn't use storage-specific backup CRDs.
+- **Class selection:** each PVC uses `snapshot_class:` if set, which must match its storage driver. Otherwise it uses the VolumeSnapshotClass marked default for its driver, or the driver's only class.
+- **All or nothing:** if any bound PVC can't be snapshotted (no class for its driver, e.g. a local-path volume), kest creates nothing and lists the PVCs it couldn't snapshot. A pre-upgrade backup that silently skips a volume is worse than none. Leave off `--snapshot` for apps whose volumes can't be snapshotted.
+- **Retention:** snapshots are labeled `app.kubernetes.io/managed-by=kest` and `kest/deploy=<app>`. kest never deletes them; prune with `kubectl delete volumesnapshot -l kest/deploy=<app>`.
+- **Restore** is a normal CSI restore: create a PVC with `dataSource` pointing at the snapshot.
 
 ### Guards
 

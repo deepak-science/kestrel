@@ -251,7 +251,9 @@ kest deploy gitea                    # kubectl apply -f k8s-manifests/gitea/
 kest deploy homepage                 # helm upgrade --install (local or third-party chart)
 kest deploy homepage --diff          # read-only preview (helm --dry-run / kubectl diff)
 kest deploy --all --target homelab   # all apps on a target
-kest deploy gitea -- --server-side   # pass extra args to kubectl/helm
+kest deploy gitea --snapshot         # CSI-snapshot the app's PVCs first, abort if that fails
+kest snapshot gitea                  # just the snapshots
+kest deploy gitea -- --validate=strict  # pass extra args to kubectl/helm
 ```
 
 It shares target resolution and the guard stack with everything else, and is

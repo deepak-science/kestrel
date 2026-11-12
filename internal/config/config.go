@@ -82,6 +82,9 @@ type Deploy struct {
 	// DeployScripts overrides the top-level helm.deploy_scripts for this
 	// deploy. nil = inherit; [] = skip.
 	DeployScripts *[]string `yaml:"deploy_scripts,omitempty"`
+	// SnapshotClass is the VolumeSnapshotClass for `kest snapshot` / `deploy --snapshot`.
+	// Empty picks, per PVC, the default (or only) class for its storage driver.
+	SnapshotClass string `yaml:"snapshot_class,omitempty"`
 }
 
 // Deploy executor kinds.
