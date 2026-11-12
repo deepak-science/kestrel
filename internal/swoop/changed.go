@@ -1,12 +1,13 @@
 package swoop
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
-// ChangedRoots returns the subset of roots that contain .tf files modified
+// ChangedRoots returns the subset of roots whose config files changed
 // relative to the given git ref. If ref is empty, it defaults to the merge-base
 // with main (or master).
 func ChangedRoots(roots []Root, baseDir, ref string) ([]Root, error) {
@@ -31,7 +32,8 @@ func ChangedRoots(roots []Root, baseDir, ref string) ([]Root, error) {
 func matchChangedFiles(roots []Root, baseDir string, changedFiles []string) []Root {
 	changedRootPaths := make(map[string]bool)
 	for _, f := range changedFiles {
-		if !strings.HasSuffix(f, ".tf") {
+		// Same inputs the saved-plan fingerprint covers, plus the version pin.
+		if name := filepath.Base(f); !fingerprintFiles(name) && name != ".opentofu-version" && name != ".terraform-version" {
 			continue
 		}
 		dir := filepath.Dir(f)
@@ -53,7 +55,8 @@ func matchChangedFiles(roots []Root, baseDir string, changedFiles []string) []Ro
 
 // mergeBase finds the merge-base between HEAD and main (or master).
 func mergeBase(dir string) (string, error) {
-	for _, branch := range []string{"main", "master"} {
+	// CI checkouts often have only the remote-tracking branch.
+	for _, branch := range []string{"main", "master", "origin/main", "origin/master"} {
 		cmd := exec.Command("git", "merge-base", "HEAD", branch)
 		cmd.Dir = dir
 		out, err := cmd.Output()
@@ -61,13 +64,13 @@ func mergeBase(dir string) (string, error) {
 			return strings.TrimSpace(string(out)), nil
 		}
 	}
-	return "HEAD", nil
+	// Falling back to HEAD would report "nothing changed" for every committed change.
+	return "", fmt.Errorf("--changed: no merge-base with main or master (a shallow checkout needs fetch-depth: 0); pass a ref, e.g. --changed=HEAD~1")
 }
 
-// gitDiffFiles returns the list of changed file paths (relative to repo root)
-// between the given ref and the working tree.
+// gitDiffFiles returns the files changed between ref and the working tree, relative to dir (the discovery base, which may be below the repo root).
 func gitDiffFiles(dir, ref string) ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", ref)
+	cmd := exec.Command("git", "diff", "--name-only", "--relative", ref)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

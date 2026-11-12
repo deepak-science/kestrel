@@ -59,10 +59,26 @@ legibly. Supply them per layer:
 
 ## Command surface (what CI can rely on)
 
-`kestci init|plan|apply <target>` — exactly one target, resolved as an exact
-path, a glob (`authentik/*`), or a literal substring. Fuzzy matching is
-rejected (ambiguity is an error, not a guess). `apply` always enforces a clean
-worktree; there is no `--force` in CI.
+`kestci init|plan|apply [target]` selects roots the same way `kest swoop` does.
+The target is an exact path, a glob (`authentik/*`), or a substring that
+matches exactly one root. A substring matching several roots is an error, and
+fuzzy matches are refused. `--dir <top-level dir>` and `--changed[=<ref>]`
+narrow or replace the target. A glob, `--dir` or `--changed` that matches
+several roots runs them in sequence and ends with a per-root summary. `apply`
+always enforces a clean worktree; there is no `--force` in CI.
+
+`--changed` picks roots whose `.tf`, `.tf.json`, `.tfvars`, lock file or
+version pin changed since the merge-base with `main`/`master` (or
+`origin/main`/`origin/master`), or since the ref you pass. It needs that
+history, so check out with `fetch-depth: 0`, or pass a ref the checkout has.
+If nothing changed, kestci prints so and exits 0. Edits in local modules
+outside a root don't select it.
+
+Version pins are checked, never written or installed. If the active
+`terraform`/`tofu` doesn't match a root's `.opentofu-version` /
+`.terraform-version`, `init` and `plan` warn and `apply` refuses, since applying
+with another version restamps state. Install the pinned version in the
+workflow, or move the pin with `kest swoop pin`.
 
 Discovery honors `.kestconfig` (`terraform.command`, `terraform.iac_dir`), so
 commit it at the repo root.
@@ -81,17 +97,15 @@ must check out the same commit, or kest refuses the plan as stale.
 - **Scheduled drift detection** — [`examples/ci/github-drift-detection.yml`](examples/ci/github-drift-detection.yml).
   Cron a plan and alert when a root no longer matches its config.
 
-Both fan out one job per root via a matrix, since `kestci` takes a single
-target. Keep the matrix list scoped to Tier-3 stacks.
+Both fan out one job per root via a matrix, which keeps each root's logs and
+status separate. `kestci plan --changed` in a single job is the simpler
+alternative for PR plans. Keep the matrix list scoped to Tier-3 stacks.
 
 ## Current limitations (CI ergonomics)
 
 These are known gaps where `kestci` lags `kest swoop`; they shape the examples
 above and are tracked in [roadmap.md](roadmap.md):
 
-- **No `--changed`.** `kest swoop` can scope to roots a branch touched;
-  `kestci` cannot, so the examples use an explicit matrix. Workaround until
-  added: compute changed paths in the workflow and feed the matrix.
 - **No terraform-flag passthrough.** Can't pass `-detailed-exitcode`,
   `-lock-timeout`, `-var`, etc. Drift detection therefore parses plan output
   for "No changes" rather than reading an exit code.

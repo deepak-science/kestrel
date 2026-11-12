@@ -41,18 +41,17 @@ func runSwoopPin(target string) error {
 	if len(roots) == 0 {
 		return fmt.Errorf("no terraform roots found under %s", baseDir)
 	}
-	matches, matchType, err := resolveTargets(roots, baseDir, target)
-	if err != nil {
-		return err
-	}
-	if len(matches) == 0 {
-		return fmt.Errorf("no matching roots found")
-	}
-	if matchType == swoop.MatchFuzzy && !confirmFuzzyMatch(matches, target) {
-		return fmt.Errorf("aborted")
-	}
-	if target != "" && len(matches) > 1 && !isBatchTarget(target) {
-		return ambiguousTargetError(matches, target)
+	// No target and no filters pins every root, where plan/apply would call that ambiguous.
+	matches := roots
+	if target != "" || swoopChanged != "" || swoopActionDir != "" {
+		var matchType swoop.MatchType
+		matches, matchType, err = swoop.Select(roots, baseDir, swoop.Selection{Target: target, Changed: swoopChanged, Dir: swoopActionDir})
+		if err != nil {
+			return err
+		}
+		if matchType == swoop.MatchFuzzy && !confirmFuzzyMatch(matches, target) {
+			return fmt.Errorf("aborted")
+		}
 	}
 
 	command, manager := cfg.TerraformCommand(), cfg.TerraformVersionManager()

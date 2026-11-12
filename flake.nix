@@ -221,13 +221,16 @@
             {
               nativeBuildInputs = [
                 pkgs.kest
+                pkgs.kestci
                 pkgs.terraform
                 pkgs.opentofu
+                pkgs.git
                 pkgs.bash
               ];
             }
             ''
               export HOME=$TMPDIR
+              export KESTCI=${pkgs.kestci}/bin/kestci
               bash ${./test/compat/compat.sh} ${pkgs.kest}/bin/kest
               touch $out
             '';

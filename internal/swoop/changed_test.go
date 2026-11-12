@@ -188,3 +188,26 @@ func TestPathContains(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchChangedFiles_NonTFInputs(t *testing.T) {
+	base := "/repo"
+	roots := []Root{
+		{Path: "vars", AbsPath: filepath.Join(base, "vars")},
+		{Path: "lock", AbsPath: filepath.Join(base, "lock")},
+		{Path: "pin", AbsPath: filepath.Join(base, "pin")},
+		{Path: "docs", AbsPath: filepath.Join(base, "docs")},
+	}
+	changed := matchChangedFiles(roots, base, []string{
+		filepath.Join("vars", "prod.tfvars"),
+		filepath.Join("lock", ".terraform.lock.hcl"),
+		filepath.Join("pin", ".opentofu-version"),
+		filepath.Join("docs", "README.md"),
+	})
+	var got []string
+	for _, r := range changed {
+		got = append(got, r.Path)
+	}
+	if len(got) != 3 || got[0] != "vars" || got[1] != "lock" || got[2] != "pin" {
+		t.Errorf("changed = %v, want [vars lock pin]", got)
+	}
+}
