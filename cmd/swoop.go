@@ -286,7 +286,7 @@ func runSwoopInteractive(cmd *cobra.Command, args []string) error {
 	case "cd":
 		return executeCD(action.root)
 	default:
-		return runSwoopAction(action.action, action.root.Path)
+		return runSwoopActionCmd(action.action, action.root.Path)
 	}
 }
 

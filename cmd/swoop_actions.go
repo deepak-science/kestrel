@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/deepak-science/kestrel/internal/guard"
 	"github.com/deepak-science/kestrel/internal/swoop"
@@ -104,14 +103,12 @@ Apply has additional safety guards:
 	},
 }
 
-// runSwoopActionCmd resolves targets (including --changed and --dir flags)
-// and dispatches to single or batch execution.
+// runSwoopActionCmd selects roots from the target plus --changed/--dir and runs the action on them.
 func runSwoopActionCmd(action, target string) error {
 	baseDir, err := resolveBaseDir()
 	if err != nil {
 		return err
 	}
-
 	roots, err := discoverRoots(baseDir)
 	if err != nil {
 		return err
@@ -120,185 +117,71 @@ func runSwoopActionCmd(action, target string) error {
 		return fmt.Errorf("no terraform roots found under %s", baseDir)
 	}
 
-	matches, matchType, err := resolveTargets(roots, baseDir, target)
+	matches, matchType, err := swoop.Select(roots, baseDir, swoop.Selection{Target: target, Changed: swoopChanged, Dir: swoopActionDir})
 	if err != nil {
 		return err
 	}
-
-	if len(matches) == 0 {
-		return fmt.Errorf("no matching roots found")
+	if matchType == swoop.MatchFuzzy && !confirmFuzzyMatch(matches, target) {
+		return fmt.Errorf("aborted")
 	}
 
-	// Fuzzy matches require user confirmation.
-	if matchType == swoop.MatchFuzzy {
-		if !confirmFuzzyMatch(matches, target) {
-			return fmt.Errorf("aborted")
-		}
-	}
-
-	// Single root — use the direct path.
-	if len(matches) == 1 {
-		return runSwoopAction(action, matches[0].Path)
-	}
-
-	// Multiple roots — batch mode.
-	// For non-glob substring matches that are ambiguous, error out.
-	if !isBatchTarget(target) && swoopChanged == "" && swoopActionDir == "" {
-		return ambiguousTargetError(matches, target)
-	}
-
-	return runSwoopBatch(action, matches, baseDir)
-}
-
-// resolveTargets combines target string, --changed, and --dir into a set of roots.
-// Returns the matched roots and the match type used for the target resolution.
-func resolveTargets(roots []swoop.Root, baseDir, target string) ([]swoop.Root, swoop.MatchType, error) {
-	matches := roots
-
-	// Filter by directory first.
-	if swoopActionDir != "" {
-		matches = swoop.ResolveByDir(matches, swoopActionDir)
-	}
-
-	// Filter by --changed.
-	if swoopChanged != "" {
-		ref := ""
-		if swoopChanged != "true" {
-			ref = swoopChanged
-		}
-		changed, err := swoop.ChangedRoots(matches, baseDir, ref)
-		if err != nil {
-			return nil, swoop.MatchAll, fmt.Errorf("detecting changed roots: %w", err)
-		}
-		matches = changed
-	}
-
-	// Filter by target string.
-	matchType := swoop.MatchAll
-	if target != "" {
-		matches, matchType = swoop.ResolveWithType(matches, target)
-	}
-
-	return matches, matchType, nil
-}
-
-// isBatchTarget returns true if the target looks like a glob pattern
-// (contains * or ?) indicating the user intended multi-root matching.
-func isBatchTarget(target string) bool {
-	return strings.ContainsAny(target, "*?[")
-}
-
-// runSwoopAction executes a terraform action against a single root.
-func runSwoopAction(action, target string) error {
-	baseDir, err := resolveBaseDir()
-	if err != nil {
-		return err
-	}
-
-	roots, err := discoverRoots(baseDir)
-	if err != nil {
-		return err
-	}
-	if len(roots) == 0 {
-		return fmt.Errorf("no terraform roots found under %s", baseDir)
-	}
-
-	matches, matchType := swoop.ResolveWithType(roots, target)
-	if len(matches) == 0 {
-		return fmt.Errorf("no roots matching %q", target)
-	}
-	if len(matches) > 1 {
-		return ambiguousTargetError(matches, target)
-	}
-
-	if matchType == swoop.MatchFuzzy {
-		if !confirmFuzzyMatch(matches, target) {
-			return fmt.Errorf("aborted")
-		}
-	}
-
-	root := matches[0]
-	return executeSingle(action, root, baseDir)
-}
-
-func executeSingle(action string, root swoop.Root, baseDir string) error {
-	// Apply-specific guards.
 	if action == "apply" {
 		if err := applyGuards(); err != nil {
 			return err
 		}
 	}
-
-	// Resolve credentials (provider + S3-backend fallback), shared with kestci.
-	res := swoop.EffectiveProfiles(cfg, root, environment)
-
-	if err := ensureSSOSession(res.ProviderProfile); err != nil {
-		return err
-	}
-	if res.BackendProfile != "" {
-		if err := ensureSSOSession(res.BackendProfile); err != nil {
-			return err
+	// Log in to every profile up front so a batch doesn't stop halfway on an expired session.
+	checked := map[string]bool{}
+	for _, root := range matches {
+		res := swoop.EffectiveProfiles(cfg, root, environment)
+		for _, p := range []string{res.ProviderProfile, res.BackendProfile} {
+			if p != "" && !checked[p] {
+				if err := ensureSSOSession(p); err != nil {
+					return err
+				}
+				checked[p] = true
+			}
 		}
 	}
 
+	r := swoop.Runner{
+		Cfg:         cfg,
+		BaseDir:     baseDir,
+		Environment: environment,
+		Policy:      withPlanFlags(swoop.Policy{PrintContext: true}),
+		Preflight:   localVersionPreflight,
+	}
+	return r.Run(action, matches)
+}
+
+// localVersionPreflight writes a missing pin when write_version is on, then checks it: a single root may offer to install, a batch only warns.
+func localVersionPreflight(root *swoop.Root, batch bool) error {
 	tfCommand := cfg.TerraformCommand()
 	tfManager := cfg.TerraformVersionManager()
+	indent := ""
+	if batch {
+		indent = "  "
+	}
 
-	// Write the version-pin file if missing and configured.
 	if cfg != nil && cfg.Terraform.WriteVersion && root.TFVersion == "" {
-		if file, v, err := swoop.EnsureTFVersion(tfCommand, tfManager, root, cfg.Terraform.DefaultVersion); err != nil {
+		if file, v, err := swoop.EnsureTFVersion(tfCommand, tfManager, *root, cfg.Terraform.DefaultVersion); err != nil {
 			slog.Warn("ensure terraform version", "root", root.Path, "err", err)
-			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%swarning: %v\n", indent, err)
 		} else if v != "" {
 			root.TFVersion = v
 			slog.Info("wrote version pin", "root", root.Path, "file", file, "version", v)
-			fmt.Fprintf(os.Stderr, "wrote %s: %s\n", file, v)
+			fmt.Fprintf(os.Stderr, "%swrote %s: %s\n", indent, file, v)
 		}
 	}
 
-	// Version-manager preflight check.
-	if err := handleTFVersionCheck(tfCommand, tfManager, root); err != nil {
-		return err
+	if !batch {
+		return handleTFVersionCheck(tfCommand, tfManager, *root)
 	}
-
-	slog.Info("swoop action",
-		"action", action,
-		"root", root.Path,
-		"dir", root.Dir,
-		"aws_profile", res.Effective,
-		"tf_version", root.TFVersion,
-	)
-
-	result, err := swoop.Execute(cfg, root, baseDir, action, res, withPlanFlags(swoop.Policy{PrintContext: true}))
-	if err != nil {
-		slog.Warn("terraform action failed", "action", action, "root", root.Path, "err", err)
-		return fmt.Errorf("terraform %s failed: %w", action, err)
+	if check := swoop.CheckTFVersion(tfCommand, tfManager, *root); !check.OK {
+		slog.Warn("terraform version mismatch", "root", root.Path, "required", check.Required, "installed", check.Installed)
+		fmt.Fprint(os.Stderr, swoop.VersionMismatchWarning(tfCommand, *root, check, indent))
 	}
-	slog.Info("terraform action complete",
-		"action", action,
-		"root", root.Path,
-		"exit_code", result.ExitCode,
-		"plan_summary", result.PlanSummary,
-	)
 	return nil
-}
-
-// versionMismatchWarning names the fix: repin when the active binary is newer than the pin, else install the pinned version.
-func versionMismatchWarning(binary string, root swoop.Root, check swoop.TFVersionCheck, indent string) string {
-	pinFile := swoop.PinFileFor(root, "")
-	var b strings.Builder
-	if check.Installed == "" {
-		fmt.Fprintf(&b, "%swarning: %s pins %s %s (%s), and %s version failed\n", indent, root.Path, binary, check.Required, pinFile, binary)
-	} else {
-		fmt.Fprintf(&b, "%swarning: %s pins %s %s (%s) but %s is active\n", indent, root.Path, binary, check.Required, pinFile, check.Installed)
-	}
-	switch {
-	case check.Installed != "" && swoop.VersionNewer(check.Installed, check.Required):
-		fmt.Fprintf(&b, "%s  to move the pin to %s: kest swoop pin %s\n", indent, check.Installed, root.Path)
-	case !check.VersionManagerAvailable:
-		fmt.Fprintf(&b, "%s  install %s %s, or set terraform.version_manager to one that's on PATH\n", indent, binary, check.Required)
-	}
-	return b.String()
 }
 
 // handleTFVersionCheck checks the terraform version and offers to install via
@@ -314,7 +197,7 @@ func handleTFVersionCheck(binary, manager string, root swoop.Root) error {
 		"required", check.Required,
 		"installed", check.Installed,
 	)
-	fmt.Fprint(os.Stderr, versionMismatchWarning(binary, root, check, ""))
+	fmt.Fprint(os.Stderr, swoop.VersionMismatchWarning(binary, root, check, ""))
 	if !check.VersionManagerAvailable {
 		return nil // warn but don't block
 	}
@@ -350,128 +233,6 @@ func handleTFVersionCheck(binary, manager string, root swoop.Root) error {
 	return nil
 }
 
-// batchResult tracks the outcome of one root in a batch run.
-type batchResult struct {
-	root    swoop.Root
-	err     error
-	summary string
-}
-
-func runSwoopBatch(action string, roots []swoop.Root, baseDir string) error {
-	// Apply-specific guards (once, not per root).
-	if action == "apply" {
-		if err := applyGuards(); err != nil {
-			return err
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "Running terraform %s on %d root(s)...\n\n", action, len(roots))
-
-	// Check SSO sessions once per unique profile before starting the batch.
-	// Includes both the apply profile and (if different) the backend profile
-	// derived from the root's `backend "s3"` block.
-	checkedProfiles := map[string]bool{}
-	for _, root := range roots {
-		res := swoop.EffectiveProfiles(cfg, root, environment)
-		for _, p := range []string{res.ProviderProfile, res.BackendProfile} {
-			if p != "" && !checkedProfiles[p] {
-				if err := ensureSSOSession(p); err != nil {
-					return err
-				}
-				checkedProfiles[p] = true
-			}
-		}
-	}
-
-	tfCommand := cfg.TerraformCommand()
-	tfManager := cfg.TerraformVersionManager()
-	results := make([]batchResult, len(roots))
-
-	for i, root := range roots {
-		res := swoop.EffectiveProfiles(cfg, root, environment)
-
-		// Print header.
-		fmt.Fprintf(os.Stderr, "━━━ [%d/%d] %s ━━━\n", i+1, len(roots), root.Path)
-
-		// Write the version-pin file if missing and configured.
-		if cfg != nil && cfg.Terraform.WriteVersion && root.TFVersion == "" {
-			if file, v, err := swoop.EnsureTFVersion(tfCommand, tfManager, root, cfg.Terraform.DefaultVersion); err != nil {
-				slog.Warn("ensure terraform version", "root", root.Path, "err", err)
-				fmt.Fprintf(os.Stderr, "  warning: %v\n", err)
-			} else if v != "" {
-				root.TFVersion = v
-				slog.Info("wrote version pin", "root", root.Path, "file", file, "version", v)
-				fmt.Fprintf(os.Stderr, "  wrote %s: %s\n", file, v)
-			}
-		}
-
-		check := swoop.CheckTFVersion(tfCommand, tfManager, root)
-		if !check.OK {
-			slog.Warn("terraform version mismatch",
-				"root", root.Path,
-				"required", check.Required,
-				"installed", check.Installed,
-			)
-			fmt.Fprint(os.Stderr, versionMismatchWarning(tfCommand, root, check, "  "))
-		}
-
-		slog.Info("swoop batch action",
-			"action", action,
-			"root", root.Path,
-			"aws_profile", res.Effective,
-		)
-		execResult, err := swoop.Execute(cfg, root, baseDir, action, res, withPlanFlags(swoop.Policy{}))
-
-		br := batchResult{root: root, err: err}
-		if execResult != nil {
-			br.summary = execResult.PlanSummary
-		}
-		results[i] = br
-
-		if err != nil {
-			slog.Warn("swoop batch action failed", "action", action, "root", root.Path, "err", err)
-			fmt.Fprintf(os.Stderr, "  FAILED: %v\n", err)
-		}
-		fmt.Fprintln(os.Stderr)
-	}
-
-	// Print summary.
-	printBatchSummary(action, results)
-
-	// Return error if any root failed.
-	var failed int
-	for _, r := range results {
-		if r.err != nil {
-			failed++
-		}
-	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d root(s) failed", failed, len(results))
-	}
-	return nil
-}
-
-func printBatchSummary(action string, results []batchResult) {
-	fmt.Fprintf(os.Stderr, "━━━ Swoop %s summary ━━━\n", action)
-	w := tabwriter.NewWriter(os.Stderr, 0, 2, 2, ' ', 0)
-	for _, r := range results {
-		status := "OK"
-		if r.err != nil {
-			status = "FAILED"
-		}
-		detail := ""
-		if r.summary != "" {
-			detail = r.summary
-		}
-		if detail != "" {
-			_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\n", r.root.Path, status, detail)
-		} else {
-			_, _ = fmt.Fprintf(w, "  %s\t%s\n", r.root.Path, status)
-		}
-	}
-	_ = w.Flush()
-}
-
 func applyGuards() error {
 	if force {
 		return nil
@@ -498,14 +259,6 @@ func confirmFuzzyMatch(matches []swoop.Root, target string) bool {
 	_, _ = fmt.Scanln(&answer)
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	return answer == "y" || answer == "yes"
-}
-
-func ambiguousTargetError(matches []swoop.Root, target string) error {
-	msg := fmt.Sprintf("target %q matches %d roots — be more specific or use a glob pattern:\n", target, len(matches))
-	for _, m := range matches {
-		msg += fmt.Sprintf("  %s\n", m.Path)
-	}
-	return fmt.Errorf("%s", msg)
 }
 
 var swoopEditCmd = &cobra.Command{
@@ -556,7 +309,7 @@ func runSwoopSingleCmd(action, target string) error {
 		return fmt.Errorf("no roots matching %q", target)
 	}
 	if len(matches) > 1 {
-		return ambiguousTargetError(matches, target)
+		return swoop.AmbiguousError(matches, target)
 	}
 
 	if matchType == swoop.MatchFuzzy {

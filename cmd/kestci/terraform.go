@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,36 +11,36 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var tfInitCmd = &cobra.Command{
-	Use:   "init <path>",
-	Short: "Run terraform init in a root",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runTerraformAction("init", args[0])
-	},
-}
+var (
+	tfInitCmd  = terraformCmd("init")
+	tfPlanCmd  = terraformCmd("plan")
+	tfApplyCmd = terraformCmd("apply")
+)
 
-var tfPlanCmd = &cobra.Command{
-	Use:   "plan <path>",
-	Short: "Run terraform plan in a root",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runTerraformAction("plan", args[0])
-	},
-}
-
-var tfApplyCmd = &cobra.Command{
-	Use:   "apply <path>",
-	Short: "Run terraform apply in a root",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runTerraformAction("apply", args[0])
-	},
+func terraformCmd(action string) *cobra.Command {
+	return &cobra.Command{
+		Use:   action + " [target]",
+		Short: "Run terraform " + action + " in matching root(s)",
+		Long: `Target is an exact path, a glob, or a substring matching one root; fuzzy
+matches are refused. --changed and --dir select roots instead of, or as well
+as, a target. Several roots run in sequence with a summary.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := ""
+			if len(args) > 0 {
+				target = args[0]
+			}
+			return runTerraformAction(action, target)
+		},
+	}
 }
 
 func runTerraformAction(action, target string) error {
 	if err := requireCI(); err != nil {
 		return err
+	}
+	if target == "" && tfChanged == "" && tfDir == "" {
+		return fmt.Errorf("target required (or select roots with --changed / --dir)")
 	}
 
 	// Apply-specific guards (always enforced, no --force).
@@ -63,54 +64,55 @@ func runTerraformAction(action, target string) error {
 	}
 	swoop.EnrichWithAccountIDs(roots, baseDir)
 
-	// Resolve target — exact path or glob only, no fuzzy matching.
-	matches, matchType := swoop.ResolveWithType(roots, target)
-	if len(matches) == 0 {
-		return fmt.Errorf("no roots matching %q", target)
+	matches, matchType, err := swoop.Select(roots, baseDir, swoop.Selection{Target: target, Changed: tfChanged, Dir: tfDir})
+	if errors.Is(err, swoop.ErrNoMatches) && tfChanged != "" {
+		fmt.Fprintln(os.Stderr, "no roots changed; nothing to do")
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if matchType == swoop.MatchFuzzy {
-		return fmt.Errorf("ambiguous target %q — use an exact path or glob in CI", target)
+		return fmt.Errorf("target %q only matched fuzzily; use an exact path, substring or glob in CI", target)
 	}
 
-	// Execute each matched root.
-	if len(matches) == 1 {
-		return executeCIAction(action, matches[0], baseDir)
+	// Same resolution as `kest swoop`, under the ambient-credential policy: the resolved profile is echoed but never injected as AWS_PROFILE.
+	r := swoop.Runner{
+		Cfg:         cfg,
+		BaseDir:     baseDir,
+		Environment: environment,
+		Policy: swoop.Policy{
+			Ambient:      true,
+			PrintContext: true,
+			SavePlan:     tfSavePlan,
+			Summary:      tfSummary,
+			ApplyPlan:    tfApplyPlan,
+		},
+		BatchContext: true,
+		Preflight:    ciVersionPreflight(action),
 	}
-
-	// Batch mode for globs.
-	fmt.Fprintf(os.Stderr, "Running terraform %s on %d root(s)...\n\n", action, len(matches))
-	var failed int
-	for i, root := range matches {
-		fmt.Fprintf(os.Stderr, "━━━ [%d/%d] %s ━━━\n", i+1, len(matches), root.Path)
-		if err := executeCIAction(action, root, baseDir); err != nil {
-			fmt.Fprintf(os.Stderr, "  FAILED: %v\n", err)
-			failed++
-		}
-		fmt.Fprintln(os.Stderr)
-	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d root(s) failed", failed, len(matches))
-	}
-	return nil
+	return r.Run(action, matches)
 }
 
-func executeCIAction(action string, root swoop.Root, baseDir string) error {
-	// Same resolution as `kest swoop` (incl. the S3-backend assume_role
-	// fallback), but executed under the ambient-credential policy: CI gets its
-	// credentials from the environment (OIDC / env vars), so the resolved
-	// profile is echoed for legibility but never injected as AWS_PROFILE.
-	res := swoop.EffectiveProfiles(cfg, root, environment)
-	_, err := swoop.Execute(cfg, root, baseDir, action, res, swoop.Policy{
-		Ambient:      true,
-		PrintContext: true,
-		SavePlan:     tfSavePlan,
-		Summary:      tfSummary,
-		ApplyPlan:    tfApplyPlan,
-	})
-	if err != nil {
-		return fmt.Errorf("terraform %s failed: %w", action, err)
+// ciVersionPreflight checks the root's pin without writing or installing anything.
+// A mismatch fails apply, since applying with another version restamps state; init and plan only warn.
+func ciVersionPreflight(action string) func(*swoop.Root, bool) error {
+	return func(root *swoop.Root, batch bool) error {
+		binary := cfg.TerraformCommand()
+		check := swoop.CheckTFVersion(binary, cfg.TerraformVersionManager(), *root)
+		if check.OK || check.Installed == "" {
+			return nil
+		}
+		if action == "apply" {
+			return fmt.Errorf("%s pins %s %s but %s is active; refusing to apply with a different version than the pin", root.Path, binary, check.Required, check.Installed)
+		}
+		indent := ""
+		if batch {
+			indent = "  "
+		}
+		fmt.Fprint(os.Stderr, swoop.VersionMismatchWarning(binary, *root, check, indent))
+		return nil
 	}
-	return nil
 }
 
 // ciResolveBaseDir determines the terraform discovery base directory.
@@ -132,9 +134,16 @@ var (
 	tfSavePlan  bool
 	tfSummary   bool
 	tfApplyPlan bool
+	tfChanged   string
+	tfDir       string
 )
 
 func init() {
+	for _, c := range []*cobra.Command{tfInitCmd, tfPlanCmd, tfApplyCmd} {
+		c.Flags().StringVar(&tfChanged, "changed", "", "only roots whose config changed vs the merge-base with main/master, or vs a ref (--changed=origin/main); needs git history")
+		c.Flags().Lookup("changed").NoOptDefVal = "true"
+		c.Flags().StringVar(&tfDir, "dir", "", "only roots under this top-level directory")
+	}
 	tfPlanCmd.Flags().BoolVar(&tfSavePlan, "out", false, "save the plan to .terraform/kest.tfplan for apply --plan")
 	tfPlanCmd.Flags().BoolVar(&tfSummary, "summary", false, "print a resource-level summary instead of the full plan (implies --out)")
 	tfApplyCmd.Flags().BoolVar(&tfApplyPlan, "plan", false, "apply the saved plan from plan --out instead of re-planning")

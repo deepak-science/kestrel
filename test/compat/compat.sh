@@ -19,10 +19,13 @@
 set -euo pipefail
 
 KEST="${1:-${KEST:-}}"
+KESTCI="${KESTCI:-}"
 if [[ -z $KEST ]]; then
-  echo "building kest via go build..."
-  KEST="$(mktemp -d)/kest"
-  go build -o "$KEST" .
+  echo "building kest + kestci via go build..."
+  BIN="$(mktemp -d)"
+  go build -o "$BIN/kest" . && go build -o "$BIN/kestci" ./cmd/kestci
+  KEST="$BIN/kest"
+  KESTCI="$BIN/kestci"
 fi
 [[ -x $KEST ]] || {
   echo "kest binary not found or not executable: $KEST" >&2
@@ -216,6 +219,49 @@ EOF
   assert_not_contains "$tf: summary masks sensitive values" "hunter2" "$out"
   unset KEST_TERRAFORM_COMMAND
 done
+
+# ── kestci: shares root selection and the batch runner with kest swoop ──────
+if [[ -n $KESTCI && -x $KESTCI ]]; then
+  echo
+  echo "▶ kestci: selection, batch summary, version pin, --changed"
+  export KEST_TERRAFORM_COMMAND=tofu
+  proj=$(mkproject)
+  mkdir -p "$proj/iac/live/dev2"
+  cp "$proj/iac/live/dev/main.tf" "$proj/iac/live/dev2/main.tf"
+  printf '.terraform/\n.terraform.lock.hcl\n' >"$proj/.gitignore"
+  g() { git -C "$proj" -c user.email=ci@example.com -c user.name=ci -c commit.gpgsign=false "$@"; }
+  g init -q
+  g add -A
+  g commit -qm init
+  ci() { (cd "$proj" && CI=true "$KESTCI" "$@" 2>&1 || true); }
+
+  out=$(ci plan dev)
+  assert_contains "kestci: substring matching two roots is ambiguous" 'target "dev" matches 2 roots' "$out"
+  out=$(ci plan)
+  assert_contains "kestci: no target and no filter is refused" "target required" "$out"
+
+  out=$(ci init 'live/*')
+  assert_contains "kestci: glob runs a batch" "Running terraform init on 2 root(s)" "$out"
+  assert_contains "kestci: batch prints the shared summary" "Swoop init summary" "$out"
+
+  out=$(ci plan --changed=HEAD)
+  assert_contains "kestci: --changed with nothing changed succeeds" "no roots changed; nothing to do" "$out"
+
+  echo "1.0.0" >"$proj/iac/live/dev/.opentofu-version"
+  g add -A
+  g commit -qm pin
+  out=$(ci apply live/dev)
+  assert_contains "kestci: apply refuses a version that doesn't match the pin" "refusing to apply with a different version" "$out"
+  out=$(ci plan live/dev)
+  assert_contains "kestci: plan only warns on a pin mismatch" "live/dev pins tofu 1.0.0" "$out"
+  assert_contains "kestci: plan still runs after the warning" "No changes" "$out"
+
+  echo "# touched" >>"$proj/iac/live/dev2/main.tf"
+  out=$(ci plan --changed=HEAD)
+  assert_contains "kestci: --changed selects the edited root" "root:    live/dev2" "$out"
+  assert_not_contains "kestci: --changed skips untouched roots" "root:    live/dev " "$out"
+  unset KEST_TERRAFORM_COMMAND
+fi
 
 # ── summary ────────────────────────────────────────────────────────────────
 

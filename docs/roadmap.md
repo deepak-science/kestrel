@@ -42,7 +42,7 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 
 ## Small fixes shipped alongside
 
-- **Version-pin warnings name a fix.** A root's pin is rewritten with `kest swoop pin [target] [--version V]`, which defaults to the active binary's version and to every root when no target is given. The mismatch warning suggests `swoop pin` when the active binary is newer than the pin, or installing the pinned version otherwise, instead of "install manually". Open: `kestci` still doesn't check the pin at all (see the parity section).
+- **Version-pin warnings name a fix.** A root's pin is rewritten with `kest swoop pin [target] [--version V]`, which defaults to the active binary's version and to every root when no target is given. The mismatch warning suggests `swoop pin` when the active binary is newer than the pin, or installing the pinned version otherwise, instead of "install manually". kestci checks the pin too (see the parity section).
 - **Runtime errors no longer print usage.** Usage text is kept for argument errors only.
 
 ## Per-guard config flags (replace blanket `--force`)
@@ -65,17 +65,7 @@ Notes:
 
 ## `swoop list` AWS column should reflect what apply actually uses
 
-`printRootTable` (`cmd/swoop.go:233`) fills the AWS column from `resolve.AWSProfileForRoot(cfg, r.Dir, r.AccountID, environment)` alone. That returns empty unless the root has an `allowed_account_ids`-style marker, a `directories` mapping, or an active `-e` target — so for repos whose only AWS touchpoint is an S3 backend with `assume_role` (e.g. the homelab repo, account `111122223333` → `homelab`), every root shows `-`.
-
-But the *executor* resolves more: `cmd/swoop_actions.go` adds a `backendProfileFor` fallback (`swoop.ExtractBackendAuth`, reading the backend `role_arn`) at lines ~216/229. So `kest swoop apply` runs with `AWS_PROFILE=homelab` while `kest swoop list` claims `-`. The list lies about what apply does.
-
-Proposed shape:
-- Factor the executor's "profile + backend fallback" into one resolver (e.g. `resolve.EffectiveProfileForRoot`) and call it from both `printRootTable` and the execute path, so they can't drift.
-- Consider marking backend-only resolution distinctly (e.g. `homelab (state)`) since it's the state/backend profile, not necessarily a resource-provider profile.
-
-Notes:
-- Pure correctness/clarity fix; no behavior change to apply itself.
-- Same divergence exists between local (`cmd/swoop_actions.go`) and CI (`cmd/kestci/terraform.go`) — CI does *not* apply the backend fallback at all (relies on ambient creds). A shared resolver closes both gaps at once. See the local/CI parity note below.
+**DONE.** `swoop list`, the TUI, `kest swoop` and `kestci` all resolve through `swoop.EffectiveProfiles` (provider profile plus the S3-backend `assume_role` fallback). Open: mark backend-only resolution distinctly (e.g. `homelab (state)`), since it's the state profile, not necessarily a provider one.
 
 ## Project-config bootstrap (`kest config init`)
 
@@ -101,29 +91,22 @@ Notes:
 
 ## Shared resolve/execute spine for local and CI (parity)
 
-`kest swoop apply` (`cmd/swoop_actions.go:executeSingle`) and `kestci apply` (`cmd/kestci/terraform.go:executeCIAction`) are parallel reimplementations of the same discover → resolve → execute → record-state loop. They're *supposed* to differ only in interactivity (fuzzy matching, SSO prompts) and credential source (named profile vs ambient). In practice they've also drifted where they shouldn't have:
+**DONE.** Both binaries call `swoop.Select` (target, `--changed`, `--dir`, one ambiguity rule) and `swoop.Runner` (single root or batch with summary, then `swoop.Execute` and state recording). They differ only where they should:
 
-- **Credentials:** local adds the `backendProfileFor` / `ExtractBackendAuth` fallback (resolves `homelab` from the backend `assume_role`); CI does not. A root that `kest swoop apply` runs cleanly can fail in CI with a state-backend auth error unless the runner happens to have ambient creds that can assume the role.
-- **Versions:** local does `EnsureTFVersion` + `handleTFVersionCheck` (write/install/verify the pin); CI skips all of it and runs whatever `tofu`/`terraform` is on PATH. The official CI image papers over this by pinning its own binary (`KEST_TERRAFORM_VERSION_MANAGER=off`), but outside that image the executed version can differ from local.
+| | `kest swoop` | `kestci` |
+|---|---|---|
+| fuzzy match | asks | refuses |
+| credentials | injects the resolved `AWS_PROFILE`, SSO login up front | ambient, profile echoed only |
+| version pin | writes a missing pin (`write_version`), offers to install | checks only: `init`/`plan` warn, `apply` refuses |
+| guards | `--force` bypasses | always on |
 
-So "works on my machine via swoop" does not currently predict "works in `kestci`" — which undercuts the whole point of a shared `.kestconfig`.
+Found along the way:
+- kestci ran every root a substring matched, where kest called it ambiguous. It's ambiguous in both now.
+- `--changed` matched nothing when the discovery base sat below the repo root, because `git diff` paths are repo-relative.
+- `--changed` fell back to `HEAD` with no `main`/`master`, so a shallow CI checkout reported nothing changed. It now also tries `origin/main` / `origin/master`, then errors.
+- `--changed` only looked at `.tf` files; it now also covers `.tf.json`, `.tfvars`, the lock file and version pins.
 
-Proposed shape: a single resolver+executor that both command surfaces call, parameterized by a small policy struct:
-
-```
-type ExecPolicy struct {
-  AllowFuzzy      bool   // kest: true, kestci: false
-  CredentialMode  enum   // Profile (kest) | Ambient (kestci)
-  InteractiveSSO  bool   // kest: true, kestci: false
-}
-```
-
-Resolution of root → profile (incl. backend fallback), version pin, and state recording live in one place; only the policy flags differ. Interactivity and fuzzy stay local-only by policy, deliberately — not by accident of which file the loop was written in.
-
-Notes:
-- Closes the `swoop list` column divergence above for free (same resolver feeds the table).
-- **Two binaries is deliberate, not incidental.** A constrained `kestci` surface (no fuzzy, no SSO prompts, explicit targets only, ambient creds) *communicates intent* in a workflow file — it's a feature, not just a smaller image. The fix is to keep the constrained front end while sharing the spine, so "constrained" never means "separately maintained and drifting."
-- `kestci` has been allowed to stagnate while features landed on `kest`; the spine is what lets CI catch up without re-porting each feature by hand.
+Two binaries stays deliberate: a constrained `kestci` surface (no fuzzy, no prompts, ambient creds) says what it is in a workflow file. Open: `--changed` doesn't follow local modules outside a root.
 
 ## kestci CI design (AWS-centric, the original intent)
 
@@ -136,10 +119,10 @@ The homelab is the atypical consumer of kest (non-AWS providers, LAN-only, non-E
 **Still open:**
 - **Plan surfacing:** partly addressed — `kestci plan --summary` emits a compact summary to stdout and `--out` leaves a planfile to carry as an artifact. The example workflows don't use them yet.
 - **Self-hosted runners** are on the table (homelab LAN, or work-specific networks). A first step can be `kestci` commands wrapped in a `justfile` before any GitHub Actions wiring — the binary should be pleasant to drive that way too.
-- **`--changed` on kestci.** `kest swoop` scopes to roots a branch touched; `kestci` can't, so CI workflows fan out an explicit matrix instead (see [ci.md](ci.md) / [examples/ci/](examples/ci/)). Porting `--changed` (and `--dir`) onto kestci would let `kestci plan --changed` gate PRs directly.
+- **`--changed` on kestci — DONE** (with `--dir`), via the shared selection above. Open: an example workflow using `kestci plan --changed` instead of a matrix.
 - **Terraform-flag passthrough.** kestci `init|plan|apply` take exactly one target and forward nothing, so CI can't pass `-detailed-exitcode` (drift detection parses "No changes" out of plan output instead), `-lock-timeout`, `-var`, etc. A trailing `-- <args>` passthrough would fix the drift-exit-code case cleanly.
 
-These two are the concrete CI-ergonomics gaps the [ci.md](ci.md) examples work around today.
+Flag passthrough is the remaining CI-ergonomics gap the [ci.md](ci.md) examples work around today.
 
 ## Deploy routines (helm + manifests) — DONE
 
