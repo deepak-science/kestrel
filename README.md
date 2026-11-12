@@ -217,13 +217,20 @@ agnostic:
 - `tfenv` (default when command is `terraform`) — reads `.terraform-version`
 - `tofuenv` (auto-default when command is `tofu`) — reads `.opentofu-version`
 - `off` — disable kest's version-manager integration entirely: no PATH
-  probe, no install offers, no mismatch warnings about a missing manager
+  probe, no install offers
 
 When `write_version: true`, kest writes the file the resolved manager
 reads — `.opentofu-version` for tofuenv, `.terraform-version` otherwise.
 Discovery reads either file (`.opentofu-version` wins when both exist), so
 a repo migrating between the two still recognises its pin during the
 transition.
+
+When the active binary doesn't match a root's pin, kest warns and names the
+fix. If the active version is newer, that's `kest swoop pin <root>`, which
+rewrites the pin to the active version (`--version` picks another; no target
+pins every root). Otherwise it's installing the pinned version, which kest
+offers to do when the version manager is on PATH. `write_version` only
+writes a pin where none exists, so bump `default_version` too when you repin.
 
 ## Usage
 
@@ -288,6 +295,7 @@ kest swoop plan --changed       # only roots with git changes
 kest swoop plan dev/vpc --out     # save the plan to .terraform/kest.tfplan
 kest swoop plan dev/vpc --summary # one line per changed resource (also saves)
 kest swoop apply dev/vpc --plan   # apply exactly the saved plan, no prompt
+kest swoop pin dev/vpc          # pin the root to the active terraform/tofu version
 kest swoop edit dev/vpc         # open $EDITOR in root directory
 eval "$(kest swoop cd dev/vpc)" # cd into root directory
 ```

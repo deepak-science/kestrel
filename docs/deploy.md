@@ -63,6 +63,7 @@ Fields, per deploy:
 | `target` | both | **required** — key in `targets:` |
 | `deploy_scripts` | both | override `helm.deploy_scripts` (`nil` = inherit, `[]` = skip) |
 | `snapshot_class` | both | VolumeSnapshotClass for `kest snapshot` / `--snapshot` (default: per-driver default class) |
+| `snapshot_skip` | both | PVCs to leave out of snapshots: globs on the PVC name, or `namespace/name` |
 
 ### Target resolution (cluster-agnostic)
 
@@ -134,7 +135,16 @@ snapshot: 1 ready
 
 - **Requirements:** the cluster needs the CSI snapshot CRDs and snapshot controller ([external-snapshotter](https://github.com/kubernetes-csi/external-snapshotter)) plus a CSI driver that supports snapshots. kest stays storage-agnostic; it doesn't use storage-specific backup CRDs.
 - **Class selection:** each PVC uses `snapshot_class:` if set, which must match its storage driver. Otherwise it uses the VolumeSnapshotClass marked default for its driver, or the driver's only class.
-- **All or nothing:** if any bound PVC can't be snapshotted (no class for its driver, e.g. a local-path volume), kest creates nothing and lists the PVCs it couldn't snapshot. A pre-upgrade backup that silently skips a volume is worse than none. Leave off `--snapshot` for apps whose volumes can't be snapshotted.
+- **All or nothing:** if any bound PVC can't be snapshotted (no class for its driver, e.g. a local-path volume), kest creates nothing and lists the PVCs it couldn't snapshot. A pre-upgrade backup that silently skips a volume is worse than none. To leave a volume out on purpose (an NFS share, a cache), list it under `snapshot_skip:`; kest prints each skipped PVC.
+
+  ```yaml
+  deploys:
+    media:
+      manifests: k8s/media
+      namespace: media
+      target: homelab
+      snapshot_skip: [library, "cache-*"]
+  ```
 - **Retention:** snapshots are labeled `app.kubernetes.io/managed-by=kest` and `kest/deploy=<app>`. kest never deletes them; prune with `kubectl delete volumesnapshot -l kest/deploy=<app>`.
 - **Restore** is a normal CSI restore: create a PVC with `dataSource` pointing at the snapshot.
 

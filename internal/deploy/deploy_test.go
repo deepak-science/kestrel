@@ -208,6 +208,8 @@ func TestDeployKindAndValidate(t *testing.T) {
 		{"no-target", config.Deploy{Chart: "c"}, config.DeployHelm, true},
 		{"server-side-manifest", config.Deploy{Manifests: "k8s/app", Target: "t", ServerSide: true}, config.DeployManifest, false},
 		{"server-side-helm", config.Deploy{Chart: "c", Target: "t", ServerSide: true}, config.DeployHelm, true},
+		{"snapshot-skip", config.Deploy{Chart: "c", Target: "t", SnapshotSkip: []string{"nfs-*", "ns/data"}}, config.DeployHelm, false},
+		{"snapshot-skip-bad-glob", config.Deploy{Chart: "c", Target: "t", SnapshotSkip: []string{"data["}}, config.DeployHelm, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

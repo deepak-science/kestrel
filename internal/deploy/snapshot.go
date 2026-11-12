@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -83,6 +84,31 @@ func planSnapshots(pvcs []pvcInfo, provisioners map[string]string, classes []sna
 		plan = append(plan, snapTarget{PVC: p.Name, Namespace: p.Namespace, Class: class})
 	}
 	return plan, problems
+}
+
+// skipPVCs drops PVCs matching a snapshot_skip glob; a pattern containing "/" matches namespace/name, otherwise just the name.
+func skipPVCs(pvcs []pvcInfo, patterns []string) (kept, skipped []pvcInfo) {
+	for _, p := range pvcs {
+		if matchesAny(p, patterns) {
+			skipped = append(skipped, p)
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	return kept, skipped
+}
+
+func matchesAny(p pvcInfo, patterns []string) bool {
+	for _, pat := range patterns {
+		subject := p.Name
+		if strings.Contains(pat, "/") {
+			subject = p.Namespace + "/" + p.Name
+		}
+		if ok, _ := path.Match(pat, subject); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotName(pvc string, at time.Time) string {
@@ -200,6 +226,9 @@ func snapshotNamespaces(d config.Deploy, res Resolution, opts runner.Options) ([
 
 // Snapshot creates a CSI VolumeSnapshot of every bound PVC in the deploy's namespace(s) and waits for each to be readyToUse.
 func Snapshot(cfg *config.Config, name string, d config.Deploy, res Resolution, pol Policy, timeout time.Duration) error {
+	if err := d.Validate(name); err != nil {
+		return err
+	}
 	out := pol.out()
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(out, format, a...) }
 	opts := runner.Options{Dir: projectRoot(cfg), Env: deployEnv(res, pol)}
@@ -221,8 +250,12 @@ func Snapshot(cfg *config.Config, name string, d config.Deploy, res Resolution, 
 			pvcs = append(pvcs, pvcInfo{Name: it.Metadata.Name, Namespace: ns, StorageClass: it.Spec.StorageClassName, Phase: it.Status.Phase})
 		}
 	}
+	pvcs, skipped := skipPVCs(pvcs, d.SnapshotSkip)
+	for _, s := range skipped {
+		p("snapshot: skip %s/%s (snapshot_skip)\n", s.Namespace, s.Name)
+	}
 	if len(pvcs) == 0 {
-		p("snapshot: no PVCs in %s\n", strings.Join(namespaces, ", "))
+		p("snapshot: no PVCs to snapshot in %s\n", strings.Join(namespaces, ", "))
 		return nil
 	}
 
@@ -245,7 +278,7 @@ func Snapshot(cfg *config.Config, name string, d config.Deploy, res Resolution, 
 
 	plan, problems := planSnapshots(pvcs, provisioners, classes, d.SnapshotClass)
 	if len(problems) > 0 {
-		return fmt.Errorf("can't snapshot every volume:\n  %s", strings.Join(problems, "\n  "))
+		return fmt.Errorf("can't snapshot every volume:\n  %s\nadd volumes that don't need one to the deploy's snapshot_skip", strings.Join(problems, "\n  "))
 	}
 	if len(plan) == 0 {
 		p("snapshot: no bound PVCs in %s\n", strings.Join(namespaces, ", "))

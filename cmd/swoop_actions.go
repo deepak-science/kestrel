@@ -283,6 +283,24 @@ func executeSingle(action string, root swoop.Root, baseDir string) error {
 	return nil
 }
 
+// versionMismatchWarning names the fix: repin when the active binary is newer than the pin, else install the pinned version.
+func versionMismatchWarning(binary string, root swoop.Root, check swoop.TFVersionCheck, indent string) string {
+	pinFile := swoop.PinFileFor(root, "")
+	var b strings.Builder
+	if check.Installed == "" {
+		fmt.Fprintf(&b, "%swarning: %s pins %s %s (%s), and %s version failed\n", indent, root.Path, binary, check.Required, pinFile, binary)
+	} else {
+		fmt.Fprintf(&b, "%swarning: %s pins %s %s (%s) but %s is active\n", indent, root.Path, binary, check.Required, pinFile, check.Installed)
+	}
+	switch {
+	case check.Installed != "" && swoop.VersionNewer(check.Installed, check.Required):
+		fmt.Fprintf(&b, "%s  to move the pin to %s: kest swoop pin %s\n", indent, check.Installed, root.Path)
+	case !check.VersionManagerAvailable:
+		fmt.Fprintf(&b, "%s  install %s %s, or set terraform.version_manager to one that's on PATH\n", indent, binary, check.Required)
+	}
+	return b.String()
+}
+
 // handleTFVersionCheck checks the terraform version and offers to install via
 // the configured version manager if there's a mismatch.
 func handleTFVersionCheck(binary, manager string, root swoop.Root) error {
@@ -296,21 +314,8 @@ func handleTFVersionCheck(binary, manager string, root swoop.Root) error {
 		"required", check.Required,
 		"installed", check.Installed,
 	)
-	pinFile := swoop.VersionFileFor(manager)
-	if check.Installed != "" {
-		fmt.Fprintf(os.Stderr, "warning: root requires terraform %s (from %s) but %s is active\n",
-			check.Required, pinFile, check.Installed)
-	} else {
-		fmt.Fprintf(os.Stderr, "warning: root requires terraform %s (from %s)\n",
-			check.Required, pinFile)
-	}
-
+	fmt.Fprint(os.Stderr, versionMismatchWarning(binary, root, check, ""))
 	if !check.VersionManagerAvailable {
-		if manager == "off" {
-			fmt.Fprintf(os.Stderr, "  version_manager is off — install manually.\n")
-		} else {
-			fmt.Fprintf(os.Stderr, "  Install manually or via %s: %s install %s\n", manager, manager, check.Required)
-		}
 		return nil // warn but don't block
 	}
 
@@ -407,7 +412,7 @@ func runSwoopBatch(action string, roots []swoop.Root, baseDir string) error {
 				"required", check.Required,
 				"installed", check.Installed,
 			)
-			fmt.Fprintf(os.Stderr, "  warning: requires terraform %s but %s is active\n", check.Required, check.Installed)
+			fmt.Fprint(os.Stderr, versionMismatchWarning(tfCommand, root, check, "  "))
 		}
 
 		slog.Info("swoop batch action",
@@ -607,7 +612,7 @@ func executeCD(root swoop.Root) error {
 
 func init() {
 	// Shared flags for all action commands.
-	for _, c := range []*cobra.Command{swoopInitCmd, swoopPlanCmd, swoopApplyCmd} {
+	for _, c := range []*cobra.Command{swoopInitCmd, swoopPlanCmd, swoopApplyCmd, swoopPinCmd} {
 		c.Flags().StringVar(&swoopChanged, "changed", "", "target roots with modified .tf files (optionally specify git ref, e.g. --changed=HEAD~3)")
 		// Allow --changed without a value (defaults to "true" meaning "use merge-base").
 		c.Flags().Lookup("changed").NoOptDefVal = "true"

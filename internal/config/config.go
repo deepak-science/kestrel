@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/adrg/xdg"
@@ -85,6 +86,8 @@ type Deploy struct {
 	// SnapshotClass is the VolumeSnapshotClass for `kest snapshot` / `deploy --snapshot`.
 	// Empty picks, per PVC, the default (or only) class for its storage driver.
 	SnapshotClass string `yaml:"snapshot_class,omitempty"`
+	// SnapshotSkip lists PVCs to leave out of snapshots, as globs on the PVC name or namespace/name.
+	SnapshotSkip []string `yaml:"snapshot_skip,omitempty"`
 }
 
 // Deploy executor kinds.
@@ -119,6 +122,11 @@ func (d Deploy) Validate(name string) error {
 		return fmt.Errorf("deploy %q: target is required", name)
 	case d.ServerSide && d.Chart != "":
 		return fmt.Errorf("deploy %q: server_side applies to manifests: deploys only", name)
+	}
+	for _, pat := range d.SnapshotSkip {
+		if _, err := path.Match(pat, ""); err != nil {
+			return fmt.Errorf("deploy %q: snapshot_skip %q: %w", name, pat, err)
+		}
 	}
 	return nil
 }

@@ -131,3 +131,25 @@ func TestSnapshotManifest(t *testing.T) {
 		t.Errorf("unexpected manifest: %s", data)
 	}
 }
+
+func TestSkipPVCs(t *testing.T) {
+	pvcs := []pvcInfo{
+		{Name: "data-gitea-0", Namespace: "gitea"},
+		{Name: "media", Namespace: "gitea"},
+		{Name: "media", Namespace: "photos"},
+		{Name: "nfs-backups", Namespace: "photos"},
+	}
+	kept, skipped := skipPVCs(pvcs, []string{"nfs-*", "gitea/media"})
+	names := func(ps []pvcInfo) (out []string) {
+		for _, p := range ps {
+			out = append(out, p.Namespace+"/"+p.Name)
+		}
+		return out
+	}
+	if got, want := names(kept), []string{"gitea/data-gitea-0", "photos/media"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("kept %v, want %v", got, want)
+	}
+	if got, want := names(skipped), []string{"gitea/media", "photos/nfs-backups"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("skipped %v, want %v", got, want)
+	}
+}
