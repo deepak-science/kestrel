@@ -59,7 +59,7 @@ the environment (OIDC, env vars, ambient ~/.kube/config).`,
 
 		slog.Info("kestci invoked",
 			"command", cmd.CommandPath(),
-			"args", args,
+			"args", execlog.Redact(args),
 			"environment", environment,
 			"ci", guard.IsCI(),
 		)

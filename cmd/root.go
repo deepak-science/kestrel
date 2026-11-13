@@ -77,7 +77,7 @@ var rootCmd = &cobra.Command{
 
 		slog.Info("kest invoked",
 			"command", cmd.CommandPath(),
-			"args", args,
+			"args", execlog.Redact(args),
 			"environment", environment,
 			"ci", guard.IsCI(),
 		)

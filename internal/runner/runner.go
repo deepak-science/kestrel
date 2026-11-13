@@ -85,7 +85,7 @@ func RunWithOpts(name string, args []string, opts Options) (*Result, error) {
 
 	slog.Debug("exec",
 		"command", name,
-		"args", args,
+		"args", execlog.Redact(args),
 		"dir", opts.Dir,
 		"env", opts.Env,
 	)
@@ -130,7 +130,7 @@ func RunInDirWithEnv(dir string, env map[string]string, name string, args ...str
 // child's stdout is NOT streamed to the parent — only captured. Use this
 // for silent helper calls (git, version probes) where streaming would be noise.
 func Output(name string, args ...string) (string, error) {
-	slog.Debug("exec.output", "command", name, "args", args)
+	slog.Debug("exec.output", "command", name, "args", execlog.Redact(args))
 	cmd := exec.Command(name, args...)
 	start := time.Now()
 	out, err := cmd.Output()

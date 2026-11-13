@@ -276,6 +276,14 @@ if [[ -n $KESTCI && -x $KESTCI ]]; then
   assert_contains "kestci: -auto-approve isn't forwarded" "terraform flag -auto-approve isn't forwarded" "$out"
   out=$(ci plan live/dev2 -- -var region=us-east-1)
   assert_contains "kestci: a bare value isn't forwarded" "pass flags as -name=value" "$out"
+  out=$(ci apply live/dev2 -- -- -unchecked.tfplan)
+  assert_contains "kestci: a second -- isn't forwarded" 'terraform arg "--"' "$out"
+  logs="$proj/.logs"
+  (cd "$proj" && CI=true XDG_CACHE_HOME="$logs" "$KESTCI" plan live/dev -- -var=db_password=hunter2 >/dev/null 2>&1) || true
+  out=$(cat "$logs"/kest/logs/*.log)
+  assert_contains "kestci: -var values are redacted in logs" "db_password=***" "$out"
+  assert_not_contains "kestci: -var values never reach logs" "hunter2" "$out"
+  rm -rf "$logs"
   out=$(ci plan live/dev2 -- -no-such-flag)
   assert_contains "kestci: terraform's own flag errors surface" "no-such-flag" "$out"
   assert_contains "kest swoop: -detailed-exitcode exits 2 on changes" "2" "$(code "$KEST" swoop plan live/dev2 -- -detailed-exitcode)"

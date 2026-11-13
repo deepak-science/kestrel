@@ -32,6 +32,7 @@ func TestCheckPassthrough(t *testing.T) {
 		{args: []string{"-var", "region=us-east-1"}, wantErr: `"region=us-east-1"`},
 		{args: []string{"plan.tfplan"}, wantErr: "-name=value"},
 		{args: []string{"-"}, wantErr: "-name=value"},
+		{args: []string{"--", "-unchecked.tfplan"}, wantErr: `"--"`},
 		{args: []string{"-auto-approve"}, wantErr: "-auto-approve"},
 		{args: []string{"--auto-approve=true"}, wantErr: "-auto-approve"},
 		{args: []string{"-out=x.tfplan"}, wantErr: "use --out"},

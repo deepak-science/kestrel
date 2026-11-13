@@ -26,9 +26,10 @@ var managedFlags = map[string]string{
 
 // CheckPassthrough rejects args kest can't forward safely.
 // Positional args are refused because `apply <planfile>` would skip the saved-plan checks; requiring -name=value keeps flag values from looking positional.
+// A bare "--" ends terraform's flag parsing, so a later "-x.tfplan" would be positional too.
 func CheckPassthrough(args []string) error {
 	for _, a := range args {
-		if !strings.HasPrefix(a, "-") || a == "-" {
+		if !strings.HasPrefix(a, "-") || a == "-" || a == "--" {
 			return fmt.Errorf("terraform arg %q isn't forwarded: pass flags as -name=value", a)
 		}
 		name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")

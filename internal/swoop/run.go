@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/deepak-science/kestrel/internal/config"
+	"github.com/deepak-science/kestrel/internal/execlog"
 )
 
 // Selection narrows discovered roots, shared by `kest swoop` and `kestci`.
@@ -145,7 +146,7 @@ func (r Runner) runOne(action string, root Root, batch bool) batchResult {
 	if batch {
 		pol.PrintContext = r.BatchContext
 	}
-	slog.Info("swoop action", "action", action, "root", root.Path, "dir", root.Dir, "aws_profile", res.Effective, "tf_version", root.TFVersion, "batch", batch, "extra_args", pol.ExtraArgs)
+	slog.Info("swoop action", "action", action, "root", root.Path, "dir", root.Dir, "aws_profile", res.Effective, "tf_version", root.TFVersion, "batch", batch, "extra_args", execlog.Redact(pol.ExtraArgs))
 
 	result, err := Execute(r.Cfg, root, r.BaseDir, action, res, pol)
 	out := batchResult{root: root}
