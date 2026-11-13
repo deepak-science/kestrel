@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/deepak-science/kestrel/internal/guard"
 	"github.com/deepak-science/kestrel/internal/logging"
 	"github.com/deepak-science/kestrel/internal/profile"
+	"github.com/deepak-science/kestrel/internal/swoop"
 	"github.com/spf13/cobra"
 )
 
@@ -75,7 +77,7 @@ var rootCmd = &cobra.Command{
 
 		slog.Info("kest invoked",
 			"command", cmd.CommandPath(),
-			"args", args,
+			"args", execlog.Redact(args),
 			"environment", environment,
 			"ci", guard.IsCI(),
 		)
@@ -108,7 +110,11 @@ func SetBuildInfo(version, commit, date string) {
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+	switch {
+	case errors.Is(err, swoop.ErrChanges):
+		os.Exit(2)
+	case err != nil:
 		os.Exit(1)
 	}
 }

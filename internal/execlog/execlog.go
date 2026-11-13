@@ -54,5 +54,6 @@ func Log(entry Entry) {
 	if encoder == nil {
 		return
 	}
+	entry.Args = Redact(entry.Args)
 	_ = encoder.Encode(entry)
 }

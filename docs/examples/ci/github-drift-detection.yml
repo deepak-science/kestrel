@@ -4,10 +4,7 @@
 # from its committed config. Same public-stacks-only scoping as
 # github-plan-apply.yml.
 #
-# Note: kestci's plan can't yet forward terraform flags, so we can't use
-# `-detailed-exitcode`. We parse the plan output for "No changes" instead. See
-# docs/ci.md "Current limitations" — flag passthrough is a planned kestci
-# enhancement that would make this a clean exit-code check.
+# `-- -detailed-exitcode` is forwarded to plan: exit 0 is in sync, 2 is drift, anything else is a failure.
 name: terraform-drift
 on:
   schedule:
@@ -36,19 +33,13 @@ jobs:
           aws-region: us-east-2
       - name: Plan and flag drift
         run: |
-          set -o pipefail
           kestci init "${{ matrix.root }}"
           echo "::group::tofu plan (${{ matrix.root }})"
-          out="$(kestci plan "${{ matrix.root }}" 2>&1)" ; status=$?
-          echo "$out"
+          status=0
+          kestci plan "${{ matrix.root }}" -- -detailed-exitcode || status=$?
           echo "::endgroup::"
-          if [ "$status" -ne 0 ]; then
-            echo "::error::${{ matrix.root }}: plan failed"
-            exit "$status"
-          fi
-          if echo "$out" | grep -q "No changes"; then
-            echo "::notice::${{ matrix.root }} is in sync"
-          else
-            echo "::error::${{ matrix.root }} has drifted from committed config"
-            exit 1
-          fi
+          case "$status" in
+            0) echo "::notice::${{ matrix.root }} is in sync" ;;
+            2) echo "::error::${{ matrix.root }} has drifted from committed config"; exit 1 ;;
+            *) echo "::error::${{ matrix.root }}: plan failed"; exit "$status" ;;
+          esac

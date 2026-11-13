@@ -80,6 +80,15 @@ Version pins are checked, never written or installed. If the active
 with another version restamps state. Install the pinned version in the
 workflow, or move the pin with `kest swoop pin`.
 
+Flags after `--` go to terraform, e.g.
+`kestci plan live/dev -- -detailed-exitcode -lock-timeout=5m`. Pass them as
+`-name=value`; a bare positional arg is refused, since `apply <planfile>` would
+skip the saved-plan checks. `-out`, `-auto-approve` and `-chdir` are refused
+too: use `--out`, or `plan --out` then `apply --plan`. With
+`-detailed-exitcode`, plan exits 2 when any selected root has changes and none
+failed, as terraform does; a failure still exits 1. `kest swoop` takes the
+same `--` flags.
+
 Discovery honors `.kestconfig` (`terraform.command`, `terraform.iac_dir`), so
 commit it at the repo root.
 
@@ -95,7 +104,7 @@ must check out the same commit, or kest refuses the plan as stale.
   Plan every PR (read-only), apply on push to `master` behind an optional
   protected Environment.
 - **Scheduled drift detection** — [`examples/ci/github-drift-detection.yml`](examples/ci/github-drift-detection.yml).
-  Cron a plan and alert when a root no longer matches its config.
+  Cron `kestci plan -- -detailed-exitcode` and alert on exit 2.
 
 Both fan out one job per root via a matrix, which keeps each root's logs and
 status separate. `kestci plan --changed` in a single job is the simpler
@@ -106,9 +115,6 @@ alternative for PR plans. Keep the matrix list scoped to Tier-3 stacks.
 These are known gaps where `kestci` lags `kest swoop`; they shape the examples
 above and are tracked in [roadmap.md](roadmap.md):
 
-- **No terraform-flag passthrough.** Can't pass `-detailed-exitcode`,
-  `-lock-timeout`, `-var`, etc. Drift detection therefore parses plan output
-  for "No changes" rather than reading an exit code.
 - **State is local-only.** `kestci` records plan/apply timestamps to swoop
   state, which is ephemeral on a runner — don't rely on it across jobs. For PR
   feedback, post `kestci plan --summary` output as a comment.

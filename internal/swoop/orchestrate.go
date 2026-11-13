@@ -89,6 +89,8 @@ type Policy struct {
 	Summary bool
 	// ApplyPlan (apply only) applies the saved planfile instead of re-planning, refusing if it's missing or stale.
 	ApplyPlan bool
+	// ExtraArgs are forwarded to terraform after kest's own args (before the planfile on apply --plan). Check them with CheckPassthrough.
+	ExtraArgs []string
 	// Stdout receives the plan summary. Defaults to os.Stdout.
 	Stdout io.Writer
 }
@@ -133,10 +135,18 @@ func Execute(cfg *config.Config, root Root, baseDir, action string, res Resoluti
 		if summary, err := ShowPlanSummary(command, root, profile); err == nil {
 			p("%s\n", summary)
 		}
+	}
+	args = append(args, pol.ExtraArgs...)
+	if applyPlan {
+		// Terraform wants options before the planfile.
 		args = append(args, PlanPath(root))
 	}
 
 	result, err := runTerraform(command, root, profile, pol.Summary && savePlan, args...)
+	if action == "plan" && result.ExitCode == 2 && DetailedExitCode(pol.ExtraArgs) {
+		err = nil
+		result.Changes = true
+	}
 	if err == nil && savePlan {
 		err = finishSavedPlan(command, root, profile, res.Effective, pol)
 	}

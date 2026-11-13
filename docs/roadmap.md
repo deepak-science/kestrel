@@ -120,9 +120,7 @@ The homelab is the atypical consumer of kest (non-AWS providers, LAN-only, non-E
 - **Plan surfacing:** partly addressed — `kestci plan --summary` emits a compact summary to stdout and `--out` leaves a planfile to carry as an artifact. The example workflows don't use them yet.
 - **Self-hosted runners** are on the table (homelab LAN, or work-specific networks). A first step can be `kestci` commands wrapped in a `justfile` before any GitHub Actions wiring — the binary should be pleasant to drive that way too.
 - **`--changed` on kestci — DONE** (with `--dir`), via the shared selection above. Open: an example workflow using `kestci plan --changed` instead of a matrix.
-- **Terraform-flag passthrough.** kestci `init|plan|apply` take exactly one target and forward nothing, so CI can't pass `-detailed-exitcode` (drift detection parses "No changes" out of plan output instead), `-lock-timeout`, `-var`, etc. A trailing `-- <args>` passthrough would fix the drift-exit-code case cleanly.
-
-Flag passthrough is the remaining CI-ergonomics gap the [ci.md](ci.md) examples work around today.
+- **Terraform-flag passthrough — DONE.** `kestci` and `kest swoop` `init|plan|apply` forward flags after `--` as `-name=value`. Positional args, `-out`, `-auto-approve` and `-chdir` are refused, so the saved-plan checks can't be skipped. `plan -- -detailed-exitcode` exits 2 on changes, across a batch too, and the drift example uses it instead of parsing for "No changes".
 
 ## Deploy routines (helm + manifests) — DONE
 

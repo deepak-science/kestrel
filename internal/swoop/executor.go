@@ -19,6 +19,9 @@ type ExecResult struct {
 	// PlanSummary is the parsed plan summary line, if any (e.g. "1 to add, 0 to change, 0 to destroy").
 	// Empty for non-plan commands or if parsing fails.
 	PlanSummary string
+
+	// Changes is set when plan ran with -detailed-exitcode and exited 2.
+	Changes bool
 }
 
 // TFVersionCheck is the result of checking the terraform version for a root.

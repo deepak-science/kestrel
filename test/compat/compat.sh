@@ -256,10 +256,43 @@ if [[ -n $KESTCI && -x $KESTCI ]]; then
   assert_contains "kestci: plan only warns on a pin mismatch" "live/dev pins tofu 1.0.0" "$out"
   assert_contains "kestci: plan still runs after the warning" "No changes" "$out"
 
-  echo "# touched" >>"$proj/iac/live/dev2/main.tf"
+  # terraform_data is built in, so the plan has a change without downloading a provider.
+  echo 'resource "terraform_data" "x" {}' >>"$proj/iac/live/dev2/main.tf"
   out=$(ci plan --changed=HEAD)
   assert_contains "kestci: --changed selects the edited root" "root:    live/dev2" "$out"
   assert_not_contains "kestci: --changed skips untouched roots" "root:    live/dev " "$out"
+
+  # code <cmd...>: exit status of a command, output discarded.
+  code() { (cd "$proj" && CI=true "$@" >/dev/null 2>&1) && echo 0 || echo $?; }
+  assert_contains "kestci: -detailed-exitcode exits 2 on changes" "2" "$(code "$KESTCI" plan live/dev2 -- -detailed-exitcode)"
+  assert_contains "kestci: -detailed-exitcode exits 0 without changes" "0" "$(code "$KESTCI" plan live/dev -- -detailed-exitcode -lock-timeout=1s)"
+  out=$(ci plan live/dev2 -- -detailed-exitcode)
+  assert_not_contains "kestci: changes aren't reported as an error" "Error:" "$out"
+  out=$(ci plan 'live/*' -- -detailed-exitcode)
+  assert_contains "kestci: batch with changes still prints the summary" "Swoop plan summary" "$out"
+  assert_not_contains "kestci: batch with changes has no failed roots" "FAILED" "$out"
+  assert_contains "kestci: batch exits 2 when a root has changes" "2" "$(code "$KESTCI" plan 'live/*' -- -detailed-exitcode)"
+  out=$(ci apply live/dev2 -- -auto-approve)
+  assert_contains "kestci: -auto-approve isn't forwarded" "terraform flag -auto-approve isn't forwarded" "$out"
+  out=$(ci plan live/dev2 -- -var region=us-east-1)
+  assert_contains "kestci: a bare value isn't forwarded" "pass flags as -name=value" "$out"
+  out=$(ci apply live/dev2 -- -- -unchecked.tfplan)
+  assert_contains "kestci: a second -- isn't forwarded" 'terraform arg "--"' "$out"
+  logs="$proj/.logs"
+  (cd "$proj" && CI=true XDG_CACHE_HOME="$logs" "$KESTCI" plan live/dev -- -var=db_password=hunter2 >/dev/null 2>&1) || true
+  out=$(cat "$logs"/kest/logs/*.log)
+  assert_contains "kestci: -var values are redacted in logs" "db_password=***" "$out"
+  assert_not_contains "kestci: -var values never reach logs" "hunter2" "$out"
+  rm -rf "$logs"
+  out=$(ci plan live/dev2 -- -no-such-flag)
+  assert_contains "kestci: terraform's own flag errors surface" "no-such-flag" "$out"
+  assert_contains "kest swoop: -detailed-exitcode exits 2 on changes" "2" "$(code "$KEST" swoop plan live/dev2 -- -detailed-exitcode)"
+
+  g add -A
+  g commit -qm resource
+  ci plan live/dev2 --out -- -lock-timeout=1s >/dev/null
+  out=$(ci apply live/dev2 --plan -- -lock-timeout=1s)
+  assert_contains "kestci: flags are forwarded before the saved planfile" "Apply complete" "$out"
   unset KEST_TERRAFORM_COMMAND
 fi
 

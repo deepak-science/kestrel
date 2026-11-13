@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/deepak-science/kestrel/internal/config"
+	"github.com/deepak-science/kestrel/internal/execlog"
 )
 
 // Selection narrows discovered roots, shared by `kest swoop` and `kestci`.
@@ -93,11 +94,14 @@ func (r Runner) out() io.Writer {
 	return os.Stderr
 }
 
-// Run executes action on roots and returns an error if any root failed.
+// Run executes action on roots and returns an error if any root failed, or ErrChanges if none failed and a -detailed-exitcode plan has changes.
 func (r Runner) Run(action string, roots []Root) error {
 	if len(roots) == 1 {
-		_, err := r.runOne(action, roots[0], false)
-		return err
+		res := r.runOne(action, roots[0], false)
+		if res.err == nil && res.changes {
+			return ErrChanges
+		}
+		return res.err
 	}
 
 	out := r.out()
@@ -105,31 +109,36 @@ func (r Runner) Run(action string, roots []Root) error {
 	results := make([]batchResult, len(roots))
 	for i, root := range roots {
 		_, _ = fmt.Fprintf(out, "━━━ [%d/%d] %s ━━━\n", i+1, len(roots), root.Path)
-		summary, err := r.runOne(action, root, true)
-		results[i] = batchResult{root: root, err: err, summary: summary}
-		if err != nil {
+		results[i] = r.runOne(action, root, true)
+		if err := results[i].err; err != nil {
 			_, _ = fmt.Fprintf(out, "  FAILED: %v\n", err)
 		}
 		_, _ = fmt.Fprintln(out)
 	}
 	printBatchSummary(out, action, results)
 
-	var failed int
+	var failed, changed int
 	for _, res := range results {
-		if res.err != nil {
+		switch {
+		case res.err != nil:
 			failed++
+		case res.changes:
+			changed++
 		}
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d root(s) failed", failed, len(results))
 	}
+	if changed > 0 {
+		return ErrChanges
+	}
 	return nil
 }
 
-func (r Runner) runOne(action string, root Root, batch bool) (string, error) {
+func (r Runner) runOne(action string, root Root, batch bool) batchResult {
 	if r.Preflight != nil {
 		if err := r.Preflight(&root, batch); err != nil {
-			return "", err
+			return batchResult{root: root, err: err}
 		}
 	}
 	res := EffectiveProfiles(r.Cfg, root, r.Environment)
@@ -137,25 +146,28 @@ func (r Runner) runOne(action string, root Root, batch bool) (string, error) {
 	if batch {
 		pol.PrintContext = r.BatchContext
 	}
-	slog.Info("swoop action", "action", action, "root", root.Path, "dir", root.Dir, "aws_profile", res.Effective, "tf_version", root.TFVersion, "batch", batch)
+	slog.Info("swoop action", "action", action, "root", root.Path, "dir", root.Dir, "aws_profile", res.Effective, "tf_version", root.TFVersion, "batch", batch, "extra_args", execlog.Redact(pol.ExtraArgs))
 
 	result, err := Execute(r.Cfg, root, r.BaseDir, action, res, pol)
-	summary := ""
+	out := batchResult{root: root}
 	if result != nil {
-		summary = result.PlanSummary
+		out.summary = result.PlanSummary
+		out.changes = result.Changes
 	}
 	if err != nil {
 		slog.Warn("terraform action failed", "action", action, "root", root.Path, "err", err)
-		return summary, fmt.Errorf("terraform %s failed: %w", action, err)
+		out.err = fmt.Errorf("terraform %s failed: %w", action, err)
+		return out
 	}
-	slog.Info("terraform action complete", "action", action, "root", root.Path, "exit_code", result.ExitCode, "plan_summary", summary)
-	return summary, nil
+	slog.Info("terraform action complete", "action", action, "root", root.Path, "exit_code", result.ExitCode, "plan_summary", out.summary)
+	return out
 }
 
 type batchResult struct {
 	root    Root
 	err     error
 	summary string
+	changes bool
 }
 
 func printBatchSummary(out io.Writer, action string, results []batchResult) {
