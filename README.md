@@ -23,6 +23,14 @@ curl -fsSL https://github.com/deepak-science/kestrel/releases/latest/download/in
 
 See [`scripts/install.sh`](scripts/install.sh) or run it with `--help` for options.
 
+### Homebrew (Apple silicon)
+
+```sh
+brew install deepak-science/tap/kest
+```
+
+Installs `kest` and `kestci` with shell completions. The release workflow updates the formula.
+
 ### Docker
 
 Every release also publishes a container image to ghcr with `kest`, `kestci`, and the tools they shell out to (terraform, opentofu, helm, kubectl, aws, git) bundled:
