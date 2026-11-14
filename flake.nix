@@ -59,6 +59,21 @@
         "-X"
         "main.date=${self.lastModifiedDate or "unknown"}"
       ];
+      # Cross-built on Linux so releases don't need a macOS runner.
+      # Go's linker ad-hoc signs darwin/arm64 binaries, which is all Apple silicon needs to run them.
+      darwinArm64 =
+        name: pkg:
+        pkg.overrideAttrs {
+          GOOS = "darwin";
+          GOARCH = "arm64";
+          doCheck = false;
+          dontStrip = true;
+          # go install puts cross binaries in bin/darwin_arm64; completions can't be generated without running them.
+          postInstall = ''
+            mv $out/bin/darwin_arm64/* $out/bin/${name}
+            rmdir $out/bin/darwin_arm64
+          '';
+        };
       # Runnable container image with kest + kestci and the tools they shell
       # out to. Build with `nix build .#docker`, then `docker load < result`.
       # Linux-only (dockerTools); the terraform version is pinned by the
@@ -194,6 +209,8 @@
         }
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           docker = dockerImageFor pkgs;
+          kest-darwin-arm64 = darwinArm64 "kest" pkgs.kest;
+          kestci-darwin-arm64 = darwinArm64 "kestci" pkgs.kestci;
         }
       );
 
