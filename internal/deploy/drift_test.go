@@ -33,7 +33,7 @@ const managedJSON = `{
 }`
 
 func TestLiveEdits(t *testing.T) {
-	got, err := liveEdits([]byte(managedJSON))
+	got, err := liveEdits([]byte(managedJSON), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,8 +46,42 @@ func TestLiveEdits(t *testing.T) {
 	}
 }
 
+// A field git sets but an old patch co-owns with the same value isn't a live edit.
+func TestLiveEdits_GitCoOwned(t *testing.T) {
+	live := `{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "server", "namespace": "app", "managedFields": [
+  {"manager": "kubectl-client-side-apply", "fieldsV1": {"f:spec": {"f:template": {"f:spec": {"f:nodeSelector": {}}}}}},
+  {"manager": "kubectl-patch", "fieldsV1": {"f:spec": {"f:template": {"f:spec": {"f:nodeSelector": {}, "f:tolerations": {}}}}}}
+]}}`
+	dry := `{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "server", "namespace": "app", "managedFields": [
+  {"manager": "kest", "fieldsV1": {"f:spec": {"f:template": {"f:spec": {"f:nodeSelector": {}}}}}},
+  {"manager": "kubectl-patch", "fieldsV1": {"f:spec": {"f:template": {"f:spec": {"f:nodeSelector": {}, "f:tolerations": {}}}}}}
+]}}`
+	got, err := liveEdits([]byte(live), []byte(dry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"kubectl-patch on deployment.apps/server: spec.template.spec.tolerations"}
+	if !slices.Equal(got, want) {
+		t.Errorf("liveEdits = %q, want %q", got, want)
+	}
+}
+
+func TestCoveredBy(t *testing.T) {
+	git := []string{"spec.template.spec.nodeSelector", "spec.replicas"}
+	for path, want := range map[string]bool{
+		"spec.template.spec.nodeSelector":          true,
+		"spec.template.spec.nodeSelector.disktype": true,
+		"spec.replicasX":                           false,
+		"spec.template.spec.tolerations":           false,
+	} {
+		if got := coveredBy(path, git); got != want {
+			t.Errorf("coveredBy(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
 func TestLiveEdits_Empty(t *testing.T) {
-	got, err := liveEdits([]byte("  \n"))
+	got, err := liveEdits([]byte("  \n"), nil)
 	if err != nil || got != nil {
 		t.Errorf("liveEdits(empty) = %v, %v", got, err)
 	}
@@ -106,11 +140,12 @@ func manifestDir(t *testing.T, diffCode int, diffOut, getJSON string) string {
 	return dir
 }
 
-// fakeKubectl answers `diff -f DIR` and `get -f DIR` from files in DIR.
+// fakeKubectl answers `diff -f DIR` and `get -f DIR` from files in DIR; the dry-run apply owns nothing.
 const fakeKubectl = `p="$3"
 case "$1" in
 diff) cat "$p/fake-diff.out"; exit "$(cat "$p/fake-diff.code")" ;;
 get) cat "$p/fake-get.json" ;;
+apply) echo '{"kind":"List","items":[]}' ;;
 esac
 `
 

@@ -65,7 +65,14 @@ func manifestDrift(d config.Deploy, res Resolution, opts runner.Options) (DriftR
 	if err != nil {
 		return rep, fmt.Errorf("kubectl get: %s", runner.ErrorExcerpt(g.Stderr, err))
 	}
-	edits, err := liveEdits([]byte(g.Stdout))
+	// A server-side dry-run as kest shows which fields git sets, whatever the deploy's apply mode.
+	// --force-conflicts keeps a conflicting live edit from failing it; kubectl diff already reports those.
+	dryArgs := append(kubectlArgs(d.Manifests, res, d.Namespace, kubectlOpts{ServerSide: true, ForceConflicts: true, JSON: true}, nil), "--dry-run=server", "--show-managed-fields")
+	dry, err := runner.RunWithOpts("kubectl", dryArgs, opts)
+	if err != nil {
+		return rep, fmt.Errorf("kubectl apply --dry-run=server: %s", runner.ErrorExcerpt(dry.Stderr, err))
+	}
+	edits, err := liveEdits([]byte(g.Stdout), []byte(dry.Stdout))
 	if err != nil {
 		return rep, err
 	}
@@ -104,6 +111,7 @@ type managedObject struct {
 	Kind       string `json:"kind"`
 	Metadata   struct {
 		Name          string `json:"name"`
+		Namespace     string `json:"namespace"`
 		ManagedFields []struct {
 			Manager  string         `json:"manager"`
 			FieldsV1 map[string]any `json:"fieldsV1"`
@@ -123,29 +131,44 @@ func liveEdit(manager string) bool {
 	return manager == "kubectl" || strings.HasPrefix(manager, "kubectl-")
 }
 
-// liveEdits lists, per object and manager, the fields owned by live kubectl edits.
-func liveEdits(data []byte) ([]string, error) {
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil, nil
+// liveEdits lists, per object and manager, the fields owned by live kubectl edits that git doesn't set.
+// live is `kubectl get --show-managed-fields`; dryRun is a server-side dry-run apply as kest, whose kest entry is exactly the fields git sets.
+// A field git sets can be co-owned by an old patch with the same value; kubectl diff covers a differing one.
+func liveEdits(live, dryRun []byte) ([]string, error) {
+	liveObjs, err := parseManaged(live)
+	if err != nil {
+		return nil, err
 	}
-	var top managedObject
-	if err := json.Unmarshal(data, &top); err != nil {
-		return nil, fmt.Errorf("parse kubectl output: %w", err)
+	dryObjs, err := parseManaged(dryRun)
+	if err != nil {
+		return nil, err
 	}
-	objs := []managedObject{top}
-	if top.Kind == "List" {
-		objs = top.Items
+	gitPaths := map[string][]string{}
+	for _, o := range dryObjs {
+		for _, mf := range o.Metadata.ManagedFields {
+			if mf.Manager == FieldManager {
+				var paths []string
+				fieldPaths(mf.FieldsV1, "", &paths)
+				gitPaths[o.key()] = append(gitPaths[o.key()], paths...)
+			}
+		}
 	}
+
 	var out []string
-	for _, o := range objs {
+	for _, o := range liveObjs {
 		ref := kubeObject{APIVersion: o.APIVersion, Kind: o.Kind}
 		ref.Metadata.Name = o.Metadata.Name
 		for _, mf := range o.Metadata.ManagedFields {
 			if !liveEdit(mf.Manager) {
 				continue
 			}
-			var paths []string
-			fieldPaths(mf.FieldsV1, "", &paths)
+			var all, paths []string
+			fieldPaths(mf.FieldsV1, "", &all)
+			for _, p := range all {
+				if !coveredBy(p, gitPaths[o.key()]) {
+					paths = append(paths, p)
+				}
+			}
 			if len(paths) == 0 {
 				continue
 			}
@@ -153,6 +176,34 @@ func liveEdits(data []byte) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func (o managedObject) key() string {
+	return o.Kind + "|" + o.Metadata.Namespace + "|" + o.Metadata.Name
+}
+
+// coveredBy reports whether git sets path itself or an ancestor of it (an atomic map or list owned whole).
+func coveredBy(path string, gitPaths []string) bool {
+	for _, g := range gitPaths {
+		if path == g || strings.HasPrefix(path, g+".") || strings.HasPrefix(path, g+"[") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseManaged(data []byte) ([]managedObject, error) {
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, nil
+	}
+	var top managedObject
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil, fmt.Errorf("parse kubectl output: %w", err)
+	}
+	if top.Kind == "List" {
+		return top.Items, nil
+	}
+	return []managedObject{top}, nil
 }
 
 // fieldPaths flattens a managedFields fieldsV1 tree into leaf paths, e.g. spec.template.spec.nodeSelector.disktype.

@@ -22,7 +22,7 @@ check failed, the same contract as `plan -detailed-exitcode`.
 |---|---|---|
 | terraform root | `plan -detailed-exitcode -lock=false -input=false` | the plan has changes |
 | manifest deploy | `kubectl diff` (server-side for `server_side` deploys) | live objects differ from git |
-| | `kubectl get --show-managed-fields` | a field is owned by a hand-run kubectl command |
+| | `kubectl get --show-managed-fields` and a server-side `apply --dry-run=server` | a hand-run kubectl command owns a field git doesn't set |
 | helm deploy | `helm status` | the release is missing, not `deployed`, or on a different chart `version:` |
 | | `helm diff upgrade --detailed-exitcode` | rendered objects differ (only with the [helm-diff](https://github.com/databus23/helm-diff) plugin) |
 
@@ -37,7 +37,10 @@ Neither `kubectl diff` nor a server-side apply catches a field that someone
 set with `kubectl patch` when your manifest never mentions that field: the diff
 is empty and a re-apply leaves it in place. The managed-fields check catches it.
 Any field manager named `kubectl` or `kubectl-*` (edit, patch, scale, set,
-label, annotate, ...) counts as a live edit. Two are exempt:
+label, annotate, ...) counts as a live edit, but only for fields git doesn't
+set. A server-side dry-run apply shows which fields those are. A field git does
+set may still be co-owned by an old patch with the same value, which is
+harmless, and `kubectl diff` reports it if the values differ. Two managers are exempt:
 `kubectl-client-side-apply`, which is kest's own manager for `server_side:
 false` deploys, and `kubectl-rollout`, which only stamps `restartedAt`.
 

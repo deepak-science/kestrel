@@ -25,7 +25,7 @@ esac
 const fakeKubectl = `p="$3"
 case "$1" in
 diff) printf 'diff -u -N /tmp/LIVE-1/apps.v1.Deployment.media.web /tmp/MERGED-2/apps.v1.Deployment.media.web\n'; exit 1 ;;
-get) echo '{"kind":"List","items":[]}' ;;
+get|apply) echo '{"kind":"List","items":[]}' ;;
 esac
 `
 
