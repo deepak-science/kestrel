@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -152,12 +153,49 @@ func TestCapList(t *testing.T) {
 	}
 }
 
-func TestHelmDiffObjects(t *testing.T) {
-	out := "media, web, Deployment (apps) has changed:\n  spec...\nmedia, web-extra, ConfigMap (v1) has been added:\nmedia, old, Service (v1) has been removed:\n"
-	got := helmDiffObjects(out)
-	want := []string{"Deployment/web changed", "ConfigMap/web-extra added", "Service/old removed"}
-	if !slices.Equal(got, want) {
-		t.Errorf("helmDiffObjects = %v, want %v", got, want)
+const renderedChart = `---
+# Source: web/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+---
+# Source: web/templates/empty.yaml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: web-leader
+  namespace: kube-system
+`
+
+func TestSplitManifest(t *testing.T) {
+	docs := splitManifest(renderedChart)
+	if len(docs) != 2 || docs[0].Kind != "Deployment" || docs[1].Metadata.Namespace != "kube-system" {
+		t.Fatalf("splitManifest = %+v", docs)
+	}
+}
+
+func TestRemovedObjects(t *testing.T) {
+	before := splitManifest(renderedChart + "---\nkind: Service\nmetadata:\n  name: old\n")
+	got := removedObjects(before, splitManifest(renderedChart))
+	if !slices.Equal(got, []string{"Service/old"}) {
+		t.Errorf("removedObjects = %v", got)
+	}
+}
+
+func TestHelmSources(t *testing.T) {
+	docs := splitManifest(renderedChart)
+	srcs := helmSources(docs, "media")
+	if len(srcs) != 2 || srcs[0].namespace != "media" || srcs[1].namespace != "" {
+		t.Fatalf("helmSources = %+v", srcs)
+	}
+	if !strings.Contains(string(srcs[0].stdin), "kind: Deployment") || !strings.Contains(string(srcs[1].stdin), "kind: RoleBinding") {
+		t.Errorf("objects grouped wrong: %q / %q", srcs[0].stdin, srcs[1].stdin)
+	}
+	// With no release namespace nothing is enforced, so one kubectl pass covers every object.
+	if srcs = helmSources(docs, ""); len(srcs) != 1 {
+		t.Errorf("no namespace: %d sources, want 1", len(srcs))
 	}
 }
 
@@ -211,24 +249,48 @@ func TestDrift_Manifest(t *testing.T) {
 	}
 }
 
-// fakeHelm answers status from $FAKE_HELM_STATUS (or "not found" when unset) and diff from $FAKE_HELM_DIFF.
-const fakeHelm = `case "$1 $2" in
-"diff version") exit 0 ;;
-"diff upgrade") printf 'media, web, Deployment (apps) has changed:\n'; exit "${FAKE_HELM_DIFF:-0}" ;;
-esac
-if [ "$1" = status ]; then
+// fakeHelm answers status from $FAKE_HELM_STATUS (or "not found" when unset), the dry-run upgrade from $FAKE_HELM_RENDER and `get manifest` from $FAKE_HELM_STORED.
+const fakeHelm = `case "$1" in
+status)
   if [ -z "$FAKE_HELM_STATUS" ]; then echo "Error: release: not found" >&2; exit 1; fi
-  echo "$FAKE_HELM_STATUS"
-fi
+  echo "$FAKE_HELM_STATUS" ;;
+upgrade) cat "$FAKE_HELM_RENDER" ;;
+get) cat "$FAKE_HELM_STORED" ;;
+esac
+`
+
+// fakeStdinKubectl logs its args and the kinds it was fed, and reports a diff when $FAKE_KUBECTL_DIFF is 1.
+const fakeStdinKubectl = `echo "$* <- $(grep '^kind:' | tr '\n' ' ')" >>"$FAKE_KUBECTL_LOG"
+case "$1" in
+diff)
+  if [ "${FAKE_KUBECTL_DIFF:-0}" = 1 ]; then echo "diff -u -N /tmp/LIVE-1/apps.v1.Deployment.media.web /tmp/MERGED-2/apps.v1.Deployment.media.web"; exit 1; fi ;;
+get) echo "$FAKE_KUBECTL_GET" ;;
+apply) echo '{"kind":"List","items":[]}' ;;
+esac
 `
 
 func TestDrift_Helm(t *testing.T) {
 	testutil.FakeBin(t, "helm", fakeHelm)
-	orig := helmDiffAvailable
-	t.Cleanup(func() { helmDiffAvailable = orig })
-	helmDiffAvailable = func() bool { return true }
+	testutil.FakeBin(t, "kubectl", fakeStdinKubectl)
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	render, err := json.Marshal(map[string]string{"manifest": renderedChart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_HELM_RENDER", write("render.json", string(render)))
+	t.Setenv("FAKE_HELM_STORED", write("stored.yaml", renderedChart))
+	log := filepath.Join(dir, "kubectl.log")
+	t.Setenv("FAKE_KUBECTL_LOG", log)
 
-	d := config.Deploy{Target: "dev", Chart: "oci://example.com/charts/web", Version: "1.2.0"}
+	d := config.Deploy{Target: "dev", Chart: "oci://example.com/charts/web", Version: "1.2.0", Namespace: "media"}
 	cfg := &config.Config{}
 
 	rep, err := Drift(cfg, "web", d, Resolution{}, Policy{})
@@ -240,18 +302,42 @@ func TestDrift_Helm(t *testing.T) {
 	if rep, err = Drift(cfg, "web", d, Resolution{}, Policy{}); err != nil || rep.Drift {
 		t.Fatalf("clean release: %+v, %v", rep, err)
 	}
-
-	t.Setenv("FAKE_HELM_STATUS", `{"info":{"status":"failed"},"chart":{"metadata":{"version":"1.1.0"}}}`)
-	t.Setenv("FAKE_HELM_DIFF", "2")
-	rep, err = Drift(cfg, "web", d, Resolution{}, Policy{})
-	want := []string{"release status failed", "chart 1.1.0 deployed, 1.2.0 configured", "differs from config: Deployment/web changed"}
-	if err != nil || !rep.Drift || !slices.Equal(rep.Details, want) {
-		t.Fatalf("drifted release: %+v, %v", rep, err)
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The release-namespace objects run with --namespace; the kube-system one runs without it.
+	for _, want := range []string{
+		"diff -f - --namespace media --server-side --field-manager=kest --force-conflicts <- kind: Deployment \n",
+		"diff -f - --server-side --field-manager=kest --force-conflicts <- kind: RoleBinding \n",
+	} {
+		if !strings.Contains(string(calls), want) {
+			t.Errorf("kubectl calls missing %q:\n%s", want, calls)
+		}
 	}
 
-	helmDiffAvailable = func() bool { return false }
-	t.Setenv("FAKE_HELM_STATUS", `{"info":{"status":"deployed"},"chart":{"metadata":{"version":"1.2.0"}}}`)
-	if rep, err = Drift(cfg, "web", d, Resolution{}, Policy{}); err != nil || rep.Drift || rep.Note == "" {
-		t.Fatalf("without helm-diff: %+v, %v", rep, err)
+	t.Setenv("FAKE_HELM_STATUS", `{"info":{"status":"failed"},"chart":{"metadata":{"version":"1.1.0"}}}`)
+	t.Setenv("FAKE_HELM_STORED", write("stored.yaml", renderedChart+"---\nkind: Service\nmetadata:\n  name: old\n"))
+	t.Setenv("FAKE_KUBECTL_DIFF", "1")
+	t.Setenv("FAKE_KUBECTL_GET", managedJSON)
+	rep, err = Drift(cfg, "web", d, Resolution{}, Policy{})
+	want := []string{
+		"release status failed",
+		"chart 1.1.0 deployed, 1.2.0 configured",
+		"no longer in chart: Service/old",
+		"differs from chart: apps.v1.Deployment.media.web",
+	}
+	if err != nil || !rep.Drift || len(rep.Details) < len(want) || !slices.Equal(rep.Details[:len(want)], want) {
+		t.Fatalf("drifted release: %+v, %v", rep, err)
+	}
+	if !slices.ContainsFunc(rep.Details, func(s string) bool { return strings.HasPrefix(s, "kubectl-") }) {
+		t.Errorf("no live-edit detail in %v", rep.Details)
+	}
+
+	// A pending release fails a dry-run upgrade, so only its status is reported.
+	t.Setenv("FAKE_HELM_STATUS", `{"info":{"status":"pending-upgrade"},"chart":{"metadata":{"version":"1.2.0"}}}`)
+	rep, err = Drift(cfg, "web", d, Resolution{}, Policy{})
+	if err != nil || !slices.Equal(rep.Details, []string{"release status pending-upgrade"}) {
+		t.Fatalf("pending release: %+v, %v", rep, err)
 	}
 }

@@ -24,8 +24,8 @@ then print one table. Nothing is applied, and plans don't take the state lock.
 
 Roots: plan -detailed-exitcode. Manifest deploys: kubectl diff, plus fields set
 by live kubectl edits (edit, patch, scale, ...), which a re-apply doesn't
-revert. Helm deploys: release status and chart version, plus a values diff when
-the helm-diff plugin is installed.
+revert. Helm deploys: release status and chart version, then the same two
+checks on the chart as a dry-run upgrade renders it.
 
 Exits 0 when everything is clean, 2 when anything drifted, 1 when a check failed.`,
 	Args: cobra.NoArgs,

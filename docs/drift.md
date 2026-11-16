@@ -24,7 +24,8 @@ check failed, the same contract as `plan -detailed-exitcode`.
 | manifest deploy | `kubectl diff` (server-side for `server_side` deploys) | live objects differ from git |
 | | `kubectl get --show-managed-fields` and a server-side `apply --dry-run=server` | a hand-run kubectl command owns a field git doesn't set |
 | helm deploy | `helm status` | the release is missing, not `deployed`, or on a different chart `version:` |
-| | `helm diff upgrade --three-way-merge --detailed-exitcode` | live objects differ from the rendered chart (only with the [helm-diff](https://github.com/databus23/helm-diff) plugin) |
+| | `helm upgrade --install --dry-run=server`, then the two manifest checks on its output | live objects differ from the rendered chart, or a hand-run kubectl command owns a field the chart doesn't set |
+| | `helm get manifest` | the release has an object the chart no longer renders |
 
 Plans skip the state lock, so a sweep never blocks a real apply. Their output
 is captured, not printed; run `kest swoop plan <root>` to see a drifted root's
@@ -47,11 +48,20 @@ false` deploys, and `kubectl-rollout`, which only stamps `restartedAt`.
 To fold a live edit back into git, add the field to the manifest. To revert it,
 remove the field from the object (`kubectl edit`), since a re-apply won't.
 
-### Helm without helm-diff
+### Helm deploys
 
-Without the plugin, a helm deploy is checked only for release status and chart
-version, and a clean row says `values not compared`. Install the plugin to
-diff values and rendered objects too.
+A helm deploy is rendered the way the next `kest deploy` would render it: a
+server-side dry-run of `helm upgrade --install` with the deploy's chart,
+version, values and `set:` entries. That needs helm 3.13 or newer and no
+plugins. The rendered objects then go through the same `kubectl diff` and
+managed-fields checks as a manifest deploy, so a changed value, an edit made
+outside helm, and a `kubectl patch` of a field the chart never sets all show
+up. Objects the chart places outside the release namespace are checked too.
+
+Hooks aren't part of the rendered manifest and aren't compared. A chart that
+generates a value on every render (a random password, a self-signed
+certificate) reports drift on every sweep. A release that is mid-operation
+(`pending-*`) reports only its status.
 
 ## Narrowing a sweep
 

@@ -156,7 +156,7 @@ func (s Sweep) checkDeploy(name string) Item {
 	case rep.Drift:
 		it.Status, it.Details = Drift, rep.Details
 	default:
-		it.Status, it.Summary = Clean, rep.Note
+		it.Status = Clean
 	}
 	return it
 }
