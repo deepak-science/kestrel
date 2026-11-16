@@ -43,12 +43,29 @@ func fingerprintFiles(name string) bool {
 	return false
 }
 
-// rootFingerprint hashes the names and contents of the root's own config files.
-// Local modules outside the root are covered by GitHead plus the clean-worktree guard.
+// rootFingerprint hashes the names and contents of the config files in the root and in every local module it calls.
 func rootFingerprint(dir string) (string, error) {
+	h := sha256.New()
+	if err := hashConfigDir(h, dir, "."); err != nil {
+		return "", err
+	}
+	for _, mod := range LocalModuleDirs(dir) {
+		rel, err := filepath.Rel(dir, mod)
+		if err != nil {
+			return "", err
+		}
+		if err := hashConfigDir(h, mod, rel); err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// hashConfigDir writes dir's config files to h, each named by its path under label.
+func hashConfigDir(h io.Writer, dir, label string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", err
+		return err
 	}
 	var names []string
 	for _, e := range entries {
@@ -58,21 +75,20 @@ func rootFingerprint(dir string) (string, error) {
 	}
 	sort.Strings(names)
 
-	h := sha256.New()
 	for _, n := range names {
 		f, err := os.Open(filepath.Join(dir, n))
 		if err != nil {
-			return "", err
+			return err
 		}
-		_, _ = fmt.Fprintf(h, "%s\x00", n)
+		_, _ = fmt.Fprintf(h, "%s\x00", filepath.ToSlash(filepath.Join(label, n)))
 		_, err = io.Copy(h, f)
 		_ = f.Close()
 		if err != nil {
-			return "", err
+			return err
 		}
 		_, _ = h.Write([]byte{0})
 	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return nil
 }
 
 func gitHead(dir string) string {
@@ -144,7 +160,7 @@ func comparePlanMeta(saved, now planMeta) error {
 	case saved.GitHead != now.GitHead:
 		return fmt.Errorf("HEAD moved from %s to %s", short(saved.GitHead), short(now.GitHead))
 	case saved.Fingerprint != now.Fingerprint:
-		return errors.New("root config changed since the plan")
+		return errors.New("root or local module config changed since the plan")
 	case saved.AWSProfile != now.AWSProfile:
 		return fmt.Errorf("planned with AWS profile %q, now %q", saved.AWSProfile, now.AWSProfile)
 	}

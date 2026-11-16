@@ -13,7 +13,7 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 
 ### P1 — reviewed == applied
 
-- **Saved-plan apply for swoop — DONE.** `swoop plan --out` writes `.terraform/kest.tfplan` plus a sidecar recording git HEAD, a hash of the root's `.tf`/`.tfvars`/lock files, and the AWS profile. `swoop apply --plan` refuses if the planfile is missing or any of those changed, prints the summary, then applies without a prompt; the planfile is removed after a successful apply. Terraform itself rejects plans whose state has moved. Same flags on `kestci`. A bare `--auto-approve` stays unsupported. Open: local modules outside the root are covered only by HEAD + the clean-worktree guard, so a `--force` apply with dirty module edits isn't caught (terraform still applies the reviewed plan, just not those edits).
+- **Saved-plan apply for swoop — DONE.** `swoop plan --out` writes `.terraform/kest.tfplan` plus a sidecar recording git HEAD, a hash of the root's `.tf`/`.tfvars`/lock files, and the AWS profile. `swoop apply --plan` refuses if the planfile is missing or any of those changed, prints the summary, then applies without a prompt; the planfile is removed after a successful apply. Terraform itself rejects plans whose state has moved. Same flags on `kestci`. A bare `--auto-approve` stays unsupported. The fingerprint also covers every local module the root calls, followed transitively, so a `--force` apply after a module edit is refused too.
 - **`--summary` for swoop plan — DONE.** Renders `show -json` as one line per changed resource with changed attribute paths, masking sensitive values; implies `--out`. Open: feed it into `PlanSummary`/state instead of the parsed plan line.
 - **`kest deploy --confirm` — DONE.** Diff, prompt, apply in one invocation (`--diff --confirm` is the same). A manifest diff with no differences skips the apply; helm always asks. For helm this is "same invocation", not atomic. kest only; kestci has no prompt.
 
@@ -39,6 +39,18 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
   - Retention: snapshots are labeled `kest/deploy=<app>` but never pruned. A `--keep N` would cover it.
   - Restore stays manual (PVC `dataSource`).
 - **`snapshot_skip:` — DONE.** Per-deploy globs on PVC name or `namespace/name` leave volumes out of snapshots; each skipped PVC is printed, and the all-or-nothing error points at it.
+
+## Fleet view: above one root / one app (exploratory)
+
+Applying roots and deploying apps one at a time is almost always the right unit, and kest should keep it that way. The gap is the layer above: knowing the state of everything without running everything by hand. Nothing here is scoped yet; these are the shapes worth evaluating.
+
+- **Drift sweep.** `kest drift` (and `kestci drift`) runs a read-only check across all roots and deploys: `plan -detailed-exitcode` per root, `diff --server-side` per deploy, and one table of clean / drifted / errored. The terraform half is mostly the existing batch runner plus `-detailed-exitcode`; the deploy half needs the same batch shape for `kest deploy`. Scheduled in CI, this is the "what changed out from under us" alarm.
+- **Foreign-field drift.** The `managedFields` audit from the SSA section, folded into the sweep, so a live `kubectl patch` shows up even though SSA and `diff` both miss it.
+- **Dependency order.** Roots read each other through `terraform_remote_state` and data sources, and apps depend on platform roots. A declared or inferred graph would let a batch apply in order and let `--changed` pull in downstream roots. Inferring from `terraform_remote_state` backend keys is plausible; declaring it in `.kestconfig` is the fallback.
+- **Version inventory.** One report of what's pinned where: tf/tofu pins, provider lock versions, chart versions, image tags. This turns an upgrade cycle into a checklist, and `swoop list` already has half the columns.
+- **Recorded state.** kest already records last plan/apply per root. Extending that to deploys, and to drift results, gives "last known good" and "stale for N days" without re-running anything.
+
+Guardrail: the fleet layer reads and reports by default. Any fleet-wide apply stays an explicit batch with a summary, never an implicit side effect of a sweep.
 
 ## Small fixes shipped alongside
 
@@ -106,7 +118,9 @@ Found along the way:
 - `--changed` fell back to `HEAD` with no `main`/`master`, so a shallow CI checkout reported nothing changed. It now also tries `origin/main` / `origin/master`, then errors.
 - `--changed` only looked at `.tf` files; it now also covers `.tf.json`, `.tfvars`, the lock file and version pins.
 
-Two binaries stays deliberate: a constrained `kestci` surface (no fuzzy, no prompts, ambient creds) says what it is in a workflow file. Open: `--changed` doesn't follow local modules outside a root.
+- `--changed` didn't follow local modules. It now selects a root when any module it calls changed, including modules outside the discovery base (the diff is repo-wide, not `--relative`).
+
+Two binaries stays deliberate: a constrained `kestci` surface (no fuzzy, no prompts, ambient creds) says what it is in a workflow file.
 
 ## kestci CI design (AWS-centric, the original intent)
 

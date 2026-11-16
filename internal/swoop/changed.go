@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -19,26 +20,44 @@ func ChangedRoots(roots []Root, baseDir, ref string) ([]Root, error) {
 		}
 	}
 
+	repoRoot, err := repoRootFrom(baseDir)
+	if err != nil {
+		return nil, err
+	}
 	changedFiles, err := gitDiffFiles(baseDir, ref)
 	if err != nil {
 		return nil, err
 	}
 
-	return matchChangedFiles(roots, baseDir, changedFiles), nil
+	modules := make(map[string][]string, len(roots))
+	for _, r := range roots {
+		modules[r.Path] = LocalModuleDirs(r.AbsPath)
+	}
+	return matchChangedFiles(roots, modules, repoRoot, changedFiles), nil
 }
 
-// matchChangedFiles is the pure logic: given a list of changed file paths
-// (relative to baseDir), return the roots that contain changed .tf files.
-func matchChangedFiles(roots []Root, baseDir string, changedFiles []string) []Root {
+// repoRootFrom returns the repo root as a path built from dir, so it compares cleanly with Root.AbsPath even when --show-toplevel would resolve a symlink.
+func repoRootFrom(dir string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--show-cdup")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("finding repo root: %w", err)
+	}
+	return filepath.Join(dir, strings.TrimSpace(string(out))), nil
+}
+
+// matchChangedFiles is the pure logic: given changed file paths (relative to baseDir) and each root's local module dirs, return the roots whose config changed.
+func matchChangedFiles(roots []Root, modules map[string][]string, baseDir string, changedFiles []string) []Root {
 	changedRootPaths := make(map[string]bool)
 	for _, f := range changedFiles {
 		// Same inputs the saved-plan fingerprint covers, plus the version pin.
 		if name := filepath.Base(f); !fingerprintFiles(name) && name != ".opentofu-version" && name != ".terraform-version" {
 			continue
 		}
-		dir := filepath.Dir(f)
+		dir := filepath.Join(baseDir, filepath.Dir(f))
 		for _, r := range roots {
-			if pathContains(r.AbsPath, filepath.Join(baseDir, dir)) {
+			if pathContains(r.AbsPath, dir) || slices.Contains(modules[r.Path], dir) {
 				changedRootPaths[r.Path] = true
 			}
 		}
@@ -68,9 +87,10 @@ func mergeBase(dir string) (string, error) {
 	return "", fmt.Errorf("--changed: no merge-base with main or master (a shallow checkout needs fetch-depth: 0); pass a ref, e.g. --changed=HEAD~1")
 }
 
-// gitDiffFiles returns the files changed between ref and the working tree, relative to dir (the discovery base, which may be below the repo root).
+// gitDiffFiles returns the files changed between ref and the working tree, relative to the repo root.
+// Not --relative: a local module can live outside the discovery base.
 func gitDiffFiles(dir, ref string) ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "--relative", ref)
+	cmd := exec.Command("git", "diff", "--name-only", ref)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

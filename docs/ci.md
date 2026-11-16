@@ -71,8 +71,9 @@ always enforces a clean worktree; there is no `--force` in CI.
 version pin changed since the merge-base with `main`/`master` (or
 `origin/main`/`origin/master`), or since the ref you pass. It needs that
 history, so check out with `fetch-depth: 0`, or pass a ref the checkout has.
-If nothing changed, kestci prints so and exits 0. Edits in local modules
-outside a root don't select it.
+If nothing changed, kestci prints so and exits 0. A root is also selected when
+a local module it calls (`source = "../..."`, followed transitively) changed,
+even one outside `iac_dir`.
 
 Version pins are checked, never written or installed. If the active
 `terraform`/`tofu` doesn't match a root's `.opentofu-version` /
