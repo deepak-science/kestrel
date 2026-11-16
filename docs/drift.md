@@ -68,6 +68,8 @@ certificate) reports drift on every sweep. A release that is mid-operation
 - `--only terraform` / `--only deploys`
 - `--dir <top-level dir>` limits roots, like `kest swoop --dir`
 - `--target <target>` limits deploys
+- `--exclude-root <path>` skips a root, or every root under a directory; `--exclude-deploy <name>` skips a deploy.
+  Both repeat, for the checks a runner has no credentials for.
 - `--parallel N` sets how many checks run at once (default 4)
 - `--init` runs `init` on each root first, one at a time, since terraform's
   plugin cache isn't safe for concurrent init. Without it, an uninitialized
@@ -75,7 +77,8 @@ certificate) reports drift on every sweep. A release that is mid-operation
 - `--json` prints the results as a JSON array instead of the table
 
 A `--dir` or `--target` that matches nothing is an error, so a typo can't
-shrink the sweep to whatever is left and report it clean.
+shrink the sweep to whatever is left and report it clean. An exclusion that
+matches nothing is an error too.
 
 `kest drift` refreshes each AWS SSO session once up front. `kestci drift` uses
 ambient credentials like the rest of kestci; a fresh checkout needs `--init`.
@@ -91,5 +94,5 @@ The step fails on exit 1 or 2, which is the alert. For finer handling, branch
 on the exit code as in
 [`examples/ci/github-drift-detection.yml`](examples/ci/github-drift-detection.yml),
 or parse `--json`. If the runner only has credentials for some roots, narrow
-with `--dir` or `--only`, or keep a per-root matrix of `kestci plan --
+with `--dir`, `--only` or `--exclude-root`, or keep a per-root matrix of `kestci plan --
 -detailed-exitcode` as that example does.
