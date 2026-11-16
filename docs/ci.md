@@ -106,8 +106,10 @@ must check out the same commit, or kest refuses the plan as stale.
   protected Environment.
 - **Scheduled drift detection** — [`examples/ci/github-drift-detection.yml`](examples/ci/github-drift-detection.yml).
   Cron `kestci plan -- -detailed-exitcode` and alert on exit 2.
+- **Drift sweep** — `kestci drift --init` checks every root and deploy in one
+  step and exits 2 on drift. See [drift.md](drift.md).
 
-Both fan out one job per root via a matrix, which keeps each root's logs and
+The first two fan out one job per root via a matrix, which keeps each root's logs and
 status separate. `kestci plan --changed` in a single job is the simpler
 alternative for PR plans. Keep the matrix list scoped to Tier-3 stacks.
 

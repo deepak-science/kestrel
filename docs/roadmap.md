@@ -29,7 +29,7 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
   - CSA → SSA migration was a clean no-op on objects last applied client-side.
 
   **Now the default** for manifest deploys (`server_side: false` opts out). A server-side diff across 15 real manifest deploys found one conflict: a StatefulSet's `volumeClaimTemplates`, an atomic field that kubectl doesn't hand from client-side to server-side ownership once defaults are filled in. kest now explains that error and points at a one-time `--force-conflicts`.
-  Open: detecting foreign-manager fields would need a `managedFields` audit, e.g. a `--drift` report listing fields owned by managers other than `kest` and known controllers.
+  Foreign-manager fields are now reported by `kest drift`, which flags fields owned by hand-run kubectl commands (see the fleet section).
 - **Prune deleted manifests.** Removing a file from a manifest dir leaves the object running; it had to be deleted by hand. `kubectl apply --prune` is legacy and dangerous; ApplySets (`--applyset`, `KUBECTL_APPLYSET=true`) are the modern path. Opt-in per deploy entry (`prune: true`), always shown in `--diff`. Higher risk, so after SSA lands.
 
 ### P2 — scoping and rituals
@@ -44,8 +44,11 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 
 Applying roots and deploying apps one at a time is almost always the right unit, and kest should keep it that way. The gap is the layer above: knowing the state of everything without running everything by hand. Nothing here is scoped yet; these are the shapes worth evaluating.
 
-- **Drift sweep.** `kest drift` (and `kestci drift`) runs a read-only check across all roots and deploys: `plan -detailed-exitcode` per root, `diff --server-side` per deploy, and one table of clean / drifted / errored. The terraform half is mostly the existing batch runner plus `-detailed-exitcode`; the deploy half needs the same batch shape for `kest deploy`. Scheduled in CI, this is the "what changed out from under us" alarm.
-- **Foreign-field drift.** The `managedFields` audit from the SSA section, folded into the sweep, so a live `kubectl patch` shows up even though SSA and `diff` both miss it.
+- **Drift sweep — DONE.** `kest drift` / `kestci drift` plans every root (`-detailed-exitcode`, no state lock) and checks every deploy, in parallel, then prints one table and exits 0/2/1. Manifest deploys run `kubectl diff`; helm deploys check release status and chart version, plus `helm diff upgrade` when the helm-diff plugin is installed. Guide: [drift.md](drift.md). Open:
+  - Helm values drift needs the helm-diff plugin. Without it, kest could compare `helm get values` against the configured values files.
+  - Results aren't kept anywhere CI can read across runs, so there's no "drifted since" or "new since last sweep". `--json` is the hook for that.
+  - No `--changed`-style selection: a sweep is all-or-filtered, by `--dir`, `--target` and `--only`.
+- **Foreign-field drift — DONE**, as part of the sweep. Fields owned by a `kubectl` / `kubectl-*` field manager are reported per object and path, except client-side apply (kest's own manager when `server_side: false`) and `kubectl-rollout`. Open: fields owned by third-party controllers and operators aren't flagged, since telling legitimate controllers from drift needs an allowlist.
 - **Dependency order.** Roots read each other through `terraform_remote_state` and data sources, and apps depend on platform roots. A declared or inferred graph would let a batch apply in order and let `--changed` pull in downstream roots. Inferring from `terraform_remote_state` backend keys is plausible; declaring it in `.kestconfig` is the fallback.
 - **Version inventory.** One report of what's pinned where: tf/tofu pins, provider lock versions, chart versions, image tags. This turns an upgrade cycle into a checklist, and `swoop list` already has half the columns.
 - **Recorded state.** kest already records last plan/apply per root. Extending that to deploys, and to drift results, gives "last known good" and "stale for N days" without re-running anything.

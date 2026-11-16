@@ -9,6 +9,7 @@ It's particularly useful if you're deploying the same app to multiple EKS cluste
 
 - **App deploys** — roll out helm charts or raw manifests to any resolved cluster, with explicit values file layering and deploy scripts
 - **Terraform orchestration** ("swoop") — discovers terraform roots in your repo, lets you pick them interactively or target them with globs, and tracks init/plan/apply state
+- **Drift detection** — `kest drift` plans every root and diffs every deploy read-only, including live `kubectl` edits a re-apply wouldn't revert ([docs/drift.md](docs/drift.md))
 - **Profile management** — set a target once, and all subsequent commands use it (no more `-e dev` on every invocation)
 - **Safety guards** — CI-only enforcement, clean worktree checks, prod-only-from-main restrictions
 - **`kest exec`** — run any command with the right AWS_PROFILE and kube context already set
