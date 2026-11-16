@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/deepak-science/kestrel/internal/config"
@@ -67,16 +68,51 @@ func TestLiveEdits_GitCoOwned(t *testing.T) {
 }
 
 func TestCoveredBy(t *testing.T) {
-	git := []string{"spec.template.spec.nodeSelector", "spec.replicas"}
-	for path, want := range map[string]bool{
-		"spec.template.spec.nodeSelector":          true,
-		"spec.template.spec.nodeSelector.disktype": true,
-		"spec.replicasX":                           false,
-		"spec.template.spec.tolerations":           false,
+	git := []fieldPath{{"f:spec", "f:nodeSelector"}, {"f:spec", "f:replicas"}, {"f:metadata", "f:labels", "f:app"}}
+	for _, tc := range []struct {
+		path fieldPath
+		want bool
+	}{
+		{fieldPath{"f:spec", "f:nodeSelector"}, true},
+		{fieldPath{"f:spec", "f:nodeSelector", "f:disktype"}, true},
+		{fieldPath{"f:spec", "f:replicasX"}, false},
+		{fieldPath{"f:spec"}, false},
+		// A dotted label name is one segment, not a child of the label "app".
+		{fieldPath{"f:metadata", "f:labels", "f:app.kubernetes.io/name"}, false},
 	} {
-		if got := coveredBy(path, git); got != want {
-			t.Errorf("coveredBy(%q) = %v, want %v", path, got, want)
+		if got := coveredBy(tc.path, git); got != tc.want {
+			t.Errorf("coveredBy(%v) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+// Git sets label "app"; a live-added "app.kubernetes.io/name" flattens to a lookalike child and must still be reported.
+// The same kind and name in another API group has its own field coverage.
+func TestLiveEdits_DottedNamesAndGroups(t *testing.T) {
+	obj := func(apiVersion, manager, fields string) string {
+		return `{"apiVersion": "` + apiVersion + `", "kind": "Widget", "metadata": {"name": "w", "namespace": "app", "managedFields": [{"manager": "` + manager + `", "fieldsV1": ` + fields + `}]}}`
+	}
+	list := func(items ...string) []byte {
+		return []byte(`{"kind": "List", "items": [` + strings.Join(items, ",") + `]}`)
+	}
+	live := list(
+		obj("a.example.com/v1", "kubectl-label", `{"f:metadata": {"f:labels": {"f:app.kubernetes.io/name": {}}}}`),
+		obj("b.example.com/v1", "kubectl-patch", `{"f:spec": {"f:size": {}}}`),
+	)
+	dry := list(
+		obj("a.example.com/v1", "kest", `{"f:metadata": {"f:labels": {"f:app": {}}}, "f:spec": {"f:size": {}}}`),
+		obj("b.example.com/v1", "kest", `{"f:metadata": {"f:labels": {"f:app": {}}}}`),
+	)
+	got, err := liveEdits(live, dry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"kubectl-label on widget.a.example.com/w: metadata.labels.app.kubernetes.io/name",
+		"kubectl-patch on widget.b.example.com/w: spec.size",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("liveEdits =\n  %q\nwant\n  %q", got, want)
 	}
 }
 

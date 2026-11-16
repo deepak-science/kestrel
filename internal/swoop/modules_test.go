@@ -61,9 +61,28 @@ module "registry" {
 func TestLocalModuleDirs(t *testing.T) {
 	repo, rootDir := moduleRepo(t)
 	got := LocalModuleDirs(rootDir)
-	want := []string{filepath.Join(repo, "modules", "net"), filepath.Join(repo, "modules", "subnet")}
+	// The missing ./gone is kept so its files' deletion can still be matched.
+	want := []string{filepath.Join(rootDir, "gone"), filepath.Join(repo, "modules", "net"), filepath.Join(repo, "modules", "subnet")}
 	if !slices.Equal(got, want) {
 		t.Errorf("LocalModuleDirs = %v, want %v", got, want)
+	}
+}
+
+func TestRootFingerprint_ModuleDeleted(t *testing.T) {
+	repo, rootDir := moduleRepo(t)
+	before, err := rootFingerprint(rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(repo, "modules", "subnet")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := rootFingerprint(rootDir)
+	if err != nil {
+		t.Fatalf("fingerprint with a deleted module: %v", err)
+	}
+	if after == before {
+		t.Error("deleting a called module left the fingerprint unchanged")
 	}
 }
 
@@ -155,5 +174,20 @@ func TestChangedRoots_ModuleOutsideBase(t *testing.T) {
 	}
 	if len(changed) != 1 {
 		t.Errorf("module edit outside the base selected %v, want [dev/vpc]", rootPaths(changed))
+	}
+
+	// diff.relative would otherwise limit the diff to the base and drop the module.
+	git(t, repo, "config", "diff.relative", "true")
+	if changed, err = ChangedRoots(roots, base, "HEAD"); err != nil || len(changed) != 1 {
+		t.Errorf("with diff.relative=true: selected %v, %v, want [dev/vpc]", rootPaths(changed), err)
+	}
+
+	// Deleting a module's last file removes its dir; the root that calls it is still selected.
+	git(t, repo, "checkout", "-q", "--", ".")
+	if err := os.RemoveAll(filepath.Join(repo, "modules", "subnet")); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err = ChangedRoots(roots, base, "HEAD"); err != nil || len(changed) != 1 {
+		t.Errorf("module deletion selected %v, %v, want [dev/vpc]", rootPaths(changed), err)
 	}
 }

@@ -163,4 +163,17 @@ func TestSelect(t *testing.T) {
 	if err := (Filter{Only: "helm"}).Validate(); err == nil {
 		t.Error("--only helm accepted")
 	}
+	// A filter that matches nothing must not shrink the sweep to whatever else is left.
+	for name, f := range map[string]Filter{
+		"unmatched --dir":          {Dir: "typo"},
+		"unmatched --target":       {Target: "typo"},
+		"--dir with only deploys":  {Only: "deploys", Dir: "dev"},
+		"--target with only tf":    {Only: "terraform", Target: "dev"},
+		"unmatched --dir, tf only": {Only: "terraform", Dir: "typo"},
+		"unmatched --target, apps": {Only: "deploys", Target: "typo"},
+	} {
+		if _, _, err := Select(cfg, roots, f); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
 }

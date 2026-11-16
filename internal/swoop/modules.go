@@ -14,7 +14,7 @@ import (
 var localSourceRE = regexp.MustCompile(`(?:^|[\s{,])"?source"?\s*[=:]\s*"(\.\.?/[^"]*)"`)
 
 // LocalModuleDirs returns the absolute dirs of every local module the root calls, following module-to-module calls.
-// A missing source dir is skipped; terraform init reports it.
+// A referenced dir that doesn't exist is still returned: deleting a module's last file removes the dir, and that change has to reach the root.
 func LocalModuleDirs(rootDir string) []string {
 	rootDir = filepath.Clean(rootDir)
 	seen := map[string]bool{rootDir: true}
@@ -29,11 +29,10 @@ func LocalModuleDirs(rootDir string) []string {
 				continue
 			}
 			seen[mod] = true
-			if fi, err := os.Stat(mod); err != nil || !fi.IsDir() {
-				continue
-			}
 			dirs = append(dirs, mod)
-			queue = append(queue, mod)
+			if fi, err := os.Stat(mod); err == nil && fi.IsDir() {
+				queue = append(queue, mod)
+			}
 		}
 	}
 	sort.Strings(dirs)

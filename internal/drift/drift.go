@@ -237,17 +237,28 @@ func (f Filter) Validate() error {
 func (f Filter) WantRoots() bool { return f.Only != "deploys" }
 
 // Select applies the filter to discovered roots and the configured deploys.
+// A --dir or --target that matches nothing is an error: a sweep that quietly drops what was asked for reads as clean.
 func Select(cfg *config.Config, roots []swoop.Root, f Filter) ([]swoop.Root, []string, error) {
-	if !f.WantRoots() {
+	switch {
+	case !f.WantRoots() && f.Dir != "":
+		return nil, nil, errors.New("--dir selects terraform roots; it can't be combined with --only deploys")
+	case !f.WantRoots():
 		roots = nil
-	} else if f.Dir != "" {
-		roots = swoop.ResolveByDir(roots, f.Dir)
+	case f.Dir != "":
+		if roots = swoop.ResolveByDir(roots, f.Dir); len(roots) == 0 {
+			return nil, nil, fmt.Errorf("--dir %q matched no terraform roots", f.Dir)
+		}
 	}
 	var deploys []string
-	if f.Only != "terraform" && cfg != nil {
+	switch {
+	case f.Only == "terraform" && f.Target != "":
+		return nil, nil, errors.New("--target selects deploys; it can't be combined with --only terraform")
+	case f.Only != "terraform" && cfg != nil:
 		deploys = cfg.DeployNames()
 		if f.Target != "" {
-			deploys = cfg.DeploysForTarget(f.Target)
+			if deploys = cfg.DeploysForTarget(f.Target); len(deploys) == 0 {
+				return nil, nil, fmt.Errorf("--target %q matched no deploys", f.Target)
+			}
 		}
 	}
 	if len(roots) == 0 && len(deploys) == 0 {

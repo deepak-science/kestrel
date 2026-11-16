@@ -54,7 +54,13 @@ func rootFingerprint(dir string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if err := hashConfigDir(h, mod, rel); err != nil {
+		err = hashConfigDir(h, mod, rel)
+		if errors.Is(err, os.ErrNotExist) {
+			// A referenced module that's gone still counts: its appearing or vanishing changes the plan.
+			_, _ = fmt.Fprintf(h, "%s\x00missing\x00", filepath.ToSlash(rel))
+			continue
+		}
+		if err != nil {
 			return "", err
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -49,7 +50,8 @@ func Drift(cfg *config.Config, name string, d config.Deploy, res Resolution, pol
 
 func manifestDrift(d config.Deploy, res Resolution, opts runner.Options) (DriftReport, error) {
 	var rep DriftReport
-	diffArgs := kubectlArgs(d.Manifests, res, d.Namespace, kubectlOpts{Diff: true, ServerSide: d.UsesServerSide()}, nil)
+	// Without --force-conflicts, a live edit to a field git sets fails a server-side diff with an ownership conflict instead of showing as a difference.
+	diffArgs := kubectlArgs(d.Manifests, res, d.Namespace, kubectlOpts{Diff: true, ServerSide: d.UsesServerSide(), ForceConflicts: d.UsesServerSide()}, nil)
 	r, err := runner.RunWithOpts("kubectl", diffArgs, opts)
 	switch {
 	// kubectl diff exits 1 when differences exist; higher codes are real errors.
@@ -143,13 +145,11 @@ func liveEdits(live, dryRun []byte) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	gitPaths := map[string][]string{}
+	gitPaths := map[string][]fieldPath{}
 	for _, o := range dryObjs {
 		for _, mf := range o.Metadata.ManagedFields {
 			if mf.Manager == FieldManager {
-				var paths []string
-				fieldPaths(mf.FieldsV1, "", &paths)
-				gitPaths[o.key()] = append(gitPaths[o.key()], paths...)
+				gitPaths[o.key()] = append(gitPaths[o.key()], fieldPaths(mf.FieldsV1, nil)...)
 			}
 		}
 	}
@@ -162,11 +162,10 @@ func liveEdits(live, dryRun []byte) ([]string, error) {
 			if !liveEdit(mf.Manager) {
 				continue
 			}
-			var all, paths []string
-			fieldPaths(mf.FieldsV1, "", &all)
-			for _, p := range all {
+			var paths []string
+			for _, p := range fieldPaths(mf.FieldsV1, nil) {
 				if !coveredBy(p, gitPaths[o.key()]) {
-					paths = append(paths, p)
+					paths = append(paths, p.String())
 				}
 			}
 			if len(paths) == 0 {
@@ -178,14 +177,36 @@ func liveEdits(live, dryRun []byte) ([]string, error) {
 	return out, nil
 }
 
+// key identifies an object by API group and kind, not version: two CRDs can share a kind.
 func (o managedObject) key() string {
-	return o.Kind + "|" + o.Metadata.Namespace + "|" + o.Metadata.Name
+	group := ""
+	if g, _, ok := strings.Cut(o.APIVersion, "/"); ok {
+		group = g
+	}
+	return group + "|" + o.Kind + "|" + o.Metadata.Namespace + "|" + o.Metadata.Name
+}
+
+// fieldPath is a managedFields path as raw fieldsV1 keys ("f:labels", "f:app.kubernetes.io/name", `k:{"name":"web"}`).
+// Paths are compared by segment: a field name can contain dots, so the flattened form is for display only.
+type fieldPath []string
+
+// String flattens the path for display, e.g. spec.template.spec.containers[name=web].image.
+func (p fieldPath) String() string {
+	var b strings.Builder
+	for _, k := range p {
+		seg := fieldSegment(k)
+		if b.Len() > 0 && !strings.HasPrefix(seg, "[") {
+			b.WriteByte('.')
+		}
+		b.WriteString(seg)
+	}
+	return b.String()
 }
 
 // coveredBy reports whether git sets path itself or an ancestor of it (an atomic map or list owned whole).
-func coveredBy(path string, gitPaths []string) bool {
+func coveredBy(path fieldPath, gitPaths []fieldPath) bool {
 	for _, g := range gitPaths {
-		if path == g || strings.HasPrefix(path, g+".") || strings.HasPrefix(path, g+"[") {
+		if len(g) <= len(path) && slices.Equal(g, path[:len(g)]) {
 			return true
 		}
 	}
@@ -206,8 +227,8 @@ func parseManaged(data []byte) ([]managedObject, error) {
 	return []managedObject{top}, nil
 }
 
-// fieldPaths flattens a managedFields fieldsV1 tree into leaf paths, e.g. spec.template.spec.nodeSelector.disktype.
-func fieldPaths(tree map[string]any, prefix string, out *[]string) {
+// fieldPaths returns the leaf paths of a managedFields fieldsV1 tree, in sorted order.
+func fieldPaths(tree map[string]any, prefix fieldPath) []fieldPath {
 	keys := make([]string, 0, len(tree))
 	for k := range tree {
 		if k != "." {
@@ -215,15 +236,17 @@ func fieldPaths(tree map[string]any, prefix string, out *[]string) {
 		}
 	}
 	sort.Strings(keys)
+	var out []fieldPath
 	for _, k := range keys {
-		p := joinFieldPath(prefix, fieldSegment(k))
+		p := append(slices.Clone(prefix), k)
 		child, _ := tree[k].(map[string]any)
 		if hasFieldKeys(child) {
-			fieldPaths(child, p, out)
+			out = append(out, fieldPaths(child, p)...)
 		} else {
-			*out = append(*out, p)
+			out = append(out, p)
 		}
 	}
+	return out
 }
 
 func hasFieldKeys(m map[string]any) bool {
@@ -253,13 +276,6 @@ func fieldSegment(k string) string {
 		}
 	}
 	return "[" + rest + "]"
-}
-
-func joinFieldPath(prefix, seg string) string {
-	if prefix == "" || strings.HasPrefix(seg, "[") {
-		return prefix + seg
-	}
-	return prefix + "." + seg
 }
 
 // Helm release state, from `helm status -o json`.
@@ -304,7 +320,8 @@ func helmDrift(release string, d config.Deploy, res Resolution, opts runner.Opti
 		return rep, nil
 	}
 	diffArgs := append([]string{"diff", "upgrade", release, d.Chart}, helmChartFlags(d, res, false)...)
-	diffArgs = append(diffArgs, "--detailed-exitcode", "--suppress-secrets")
+	// --three-way-merge compares against live objects; the default only compares the stored release manifest, which misses edits made outside helm.
+	diffArgs = append(diffArgs, "--detailed-exitcode", "--suppress-secrets", "--three-way-merge")
 	r, err = runner.RunWithOpts("helm", diffArgs, opts)
 	switch {
 	case r.ExitCode == 2:

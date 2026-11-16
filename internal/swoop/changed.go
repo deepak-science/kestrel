@@ -24,7 +24,7 @@ func ChangedRoots(roots []Root, baseDir, ref string) ([]Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	changedFiles, err := gitDiffFiles(baseDir, ref)
+	changedFiles, err := gitDiffFiles(repoRoot, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -88,10 +88,10 @@ func mergeBase(dir string) (string, error) {
 }
 
 // gitDiffFiles returns the files changed between ref and the working tree, relative to the repo root.
-// Not --relative: a local module can live outside the discovery base.
-func gitDiffFiles(dir, ref string) ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", ref)
-	cmd.Dir = dir
+// A local module can live outside the discovery base, so the diff must cover the whole repo; --no-relative overrides a user's diff.relative=true.
+func gitDiffFiles(repoRoot, ref string) ([]string, error) {
+	cmd := exec.Command("git", "diff", "--name-only", "--no-relative", ref)
+	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

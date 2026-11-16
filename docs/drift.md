@@ -24,7 +24,7 @@ check failed, the same contract as `plan -detailed-exitcode`.
 | manifest deploy | `kubectl diff` (server-side for `server_side` deploys) | live objects differ from git |
 | | `kubectl get --show-managed-fields` and a server-side `apply --dry-run=server` | a hand-run kubectl command owns a field git doesn't set |
 | helm deploy | `helm status` | the release is missing, not `deployed`, or on a different chart `version:` |
-| | `helm diff upgrade --detailed-exitcode` | rendered objects differ (only with the [helm-diff](https://github.com/databus23/helm-diff) plugin) |
+| | `helm diff upgrade --three-way-merge --detailed-exitcode` | live objects differ from the rendered chart (only with the [helm-diff](https://github.com/databus23/helm-diff) plugin) |
 
 Plans skip the state lock, so a sweep never blocks a real apply. Their output
 is captured, not printed; run `kest swoop plan <root>` to see a drifted root's
@@ -63,6 +63,9 @@ diff values and rendered objects too.
   plugin cache isn't safe for concurrent init. Without it, an uninitialized
   root is reported as an error.
 - `--json` prints the results as a JSON array instead of the table
+
+A `--dir` or `--target` that matches nothing is an error, so a typo can't
+shrink the sweep to whatever is left and report it clean.
 
 `kest drift` refreshes each AWS SSO session once up front. `kestci drift` uses
 ambient credentials like the rest of kestci; a fresh checkout needs `--init`.
