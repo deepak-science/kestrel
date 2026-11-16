@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// localSourceRE matches a local module source in HCL (`source = "../x"`) or JSON (`"source": "./x"`).
+// localSourceRE matches a local module source in HCL (`source = "../x"`) or JSON (`"source": "./x"`), anywhere in a line: single-line blocks and minified JSON put it mid-line.
 // Terraform treats a source as local only when it starts with ./ or ../, and provider sources never do, so no block parsing is needed.
-var localSourceRE = regexp.MustCompile(`^"?source"?\s*[=:]\s*"(\.\.?/[^"]*)"`)
+var localSourceRE = regexp.MustCompile(`(?:^|[\s{,])"?source"?\s*[=:]\s*"(\.\.?/[^"]*)"`)
 
 // LocalModuleDirs returns the absolute dirs of every local module the root calls, following module-to-module calls.
 // A missing source dir is skipped; terraform init reports it.
@@ -56,8 +56,9 @@ func localSources(dir string) []string {
 			continue
 		}
 		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		for scanner.Scan() {
-			if m := localSourceRE.FindStringSubmatch(strings.TrimSpace(scanner.Text())); m != nil {
+			for _, m := range localSourceRE.FindAllStringSubmatch(scanner.Text(), -1) {
 				srcs = append(srcs, m[1])
 			}
 		}

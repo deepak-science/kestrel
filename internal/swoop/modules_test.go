@@ -67,6 +67,21 @@ func TestLocalModuleDirs(t *testing.T) {
 	}
 }
 
+func TestLocalSources_MidLine(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tf"), `module "a" { source = "../a" }
+module "r" { source = "hashicorp/consul/aws" }
+locals { note = "resource_source = ./not-a-module" }
+`)
+	writeFile(t, filepath.Join(dir, "gen.tf.json"), `{"module":{"b":{"source":"./b"},"c":{"version":"1","source":"../c"}}}`)
+	got := localSources(dir)
+	slices.Sort(got)
+	want := []string{"../a", "../c", "./b"}
+	if !slices.Equal(got, want) {
+		t.Errorf("localSources = %v, want %v", got, want)
+	}
+}
+
 func TestRootFingerprint_CoversLocalModules(t *testing.T) {
 	repo, rootDir := moduleRepo(t)
 	before, err := rootFingerprint(rootDir)

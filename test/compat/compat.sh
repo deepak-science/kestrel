@@ -202,7 +202,7 @@ EOF
 
   sed -i 's/1.0.0/2.0.0/' "$proj/iac/live/dev/main.tf"
   out=$(cd "$proj" && "$KEST" swoop apply live/dev --plan --force 2>&1 || true)
-  assert_contains "$tf: config edit after plan is stale" "root config changed since the plan" "$out"
+  assert_contains "$tf: config edit after plan is stale" "root or local module config changed since the plan" "$out"
 
   (cd "$proj" && "$KEST" swoop plan live/dev --out >/dev/null 2>&1)
   out=$(cd "$proj" && "$KEST" swoop apply live/dev --plan --force 2>&1 || true)
@@ -217,6 +217,17 @@ EOF
   out=$(cd "$proj" && "$KEST" swoop plan live/dev --summary 2>/dev/null || true)
   assert_contains "$tf: update shows changed attribute" 'input.version: "2.0.0" → "3.0.0"' "$out"
   assert_not_contains "$tf: summary masks sensitive values" "hunter2" "$out"
+
+  # A local module outside the root is part of the plan's fingerprint.
+  proj=$(mkproject)
+  mkdir -p "$proj/iac/modules/app"
+  echo 'resource "terraform_data" "m" { input = "1.0.0" }' >"$proj/iac/modules/app/main.tf"
+  echo 'module "app" { source = "../../modules/app" }' >>"$proj/iac/live/dev/main.tf"
+  (cd "$proj" && "$KEST" swoop init live/dev >/dev/null 2>&1)
+  (cd "$proj" && "$KEST" swoop plan live/dev --out >/dev/null 2>&1)
+  sed -i 's/1.0.0/2.0.0/' "$proj/iac/modules/app/main.tf"
+  out=$(cd "$proj" && "$KEST" swoop apply live/dev --plan --force 2>&1 || true)
+  assert_contains "$tf: module edit after plan is stale" "root or local module config changed since the plan" "$out"
   unset KEST_TERRAFORM_COMMAND
 done
 
