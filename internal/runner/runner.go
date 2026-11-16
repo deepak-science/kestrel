@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -167,11 +168,13 @@ func exitCodeFromErr(err error) int {
 	return -1
 }
 
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
 // ErrorExcerpt returns the first "Error:" line of a tool's stderr, else its last non-empty line, else fallback's message.
 // Terraform's boxed diagnostics ("│ Error: ...") are unboxed first.
 func ErrorExcerpt(stderr string, fallback error) string {
 	var last string
-	for _, line := range strings.Split(stderr, "\n") {
+	for _, line := range strings.Split(ansiRE.ReplaceAllString(stderr, ""), "\n") {
 		line = strings.TrimSpace(strings.TrimLeft(line, "│╷╵ "))
 		if line == "" {
 			continue

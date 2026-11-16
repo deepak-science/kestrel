@@ -21,7 +21,7 @@ type DriftResult struct {
 // DriftInit runs a quiet `init -input=false`.
 // Callers run inits one at a time: terraform's plugin cache isn't safe for concurrent init.
 func DriftInit(cfg *config.Config, root Root, res Resolution, pol Policy) error {
-	_, err := quietTerraform(cfg, root, res, pol, "init", "-input=false")
+	_, err := quietTerraform(cfg, root, res, pol, "init", "-input=false", "-no-color")
 	return err
 }
 
@@ -31,7 +31,7 @@ func DriftPlan(cfg *config.Config, root Root, res Resolution, pol Policy) (Drift
 	if !root.Initialized {
 		return DriftResult{}, errors.New("not initialized (run kest swoop init, or drift --init)")
 	}
-	args := append([]string{"plan", "-detailed-exitcode", "-lock=false", "-input=false"}, pol.ExtraArgs...)
+	args := append([]string{"plan", "-detailed-exitcode", "-lock=false", "-input=false", "-no-color"}, pol.ExtraArgs...)
 	r, err := quietTerraform(cfg, root, res, pol, args...)
 	out := DriftResult{ExitCode: r.ExitCode, Summary: parsePlanSummary(r.Stdout)}
 	if r.ExitCode == 2 {
