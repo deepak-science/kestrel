@@ -13,7 +13,7 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
 
 ### P1 — reviewed == applied
 
-- **Saved-plan apply for swoop — DONE.** `swoop plan --out` writes `.terraform/kest.tfplan` plus a sidecar recording git HEAD, a hash of the root's `.tf`/`.tfvars`/lock files, and the AWS profile. `swoop apply --plan` refuses if the planfile is missing or any of those changed, prints the summary, then applies without a prompt; the planfile is removed after a successful apply. Terraform itself rejects plans whose state has moved. Same flags on `kestci`. A bare `--auto-approve` stays unsupported. Open: local modules outside the root are covered only by HEAD + the clean-worktree guard, so a `--force` apply with dirty module edits isn't caught (terraform still applies the reviewed plan, just not those edits).
+- **Saved-plan apply for swoop — DONE.** `swoop plan --out` writes `.terraform/kest.tfplan` plus a sidecar recording git HEAD, a hash of the root's `.tf`/`.tfvars`/lock files, and the AWS profile. `swoop apply --plan` refuses if the planfile is missing or any of those changed, prints the summary, then applies without a prompt; the planfile is removed after a successful apply. Terraform itself rejects plans whose state has moved. Same flags on `kestci`. A bare `--auto-approve` stays unsupported. The fingerprint also covers every local module the root calls, followed transitively, so a `--force` apply after a module edit is refused too. Open: module discovery is a line scan for local `source` values, which over-matches (e.g. a commented-out line; that only over-selects). Terraform's own `.terraform/modules/modules.json`, written at init, lists every module and its dir: read it when present and keep the scan as the fallback for uninitialized roots. A full HCL parse is the alternative, at the cost of a dependency.
 - **`--summary` for swoop plan — DONE.** Renders `show -json` as one line per changed resource with changed attribute paths, masking sensitive values; implies `--out`. Open: feed it into `PlanSummary`/state instead of the parsed plan line.
 - **`kest deploy --confirm` — DONE.** Diff, prompt, apply in one invocation (`--diff --confirm` is the same). A manifest diff with no differences skips the apply; helm always asks. For helm this is "same invocation", not atomic. kest only; kestci has no prompt.
 
@@ -29,7 +29,7 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
   - CSA → SSA migration was a clean no-op on objects last applied client-side.
 
   **Now the default** for manifest deploys (`server_side: false` opts out). A server-side diff across 15 real manifest deploys found one conflict: a StatefulSet's `volumeClaimTemplates`, an atomic field that kubectl doesn't hand from client-side to server-side ownership once defaults are filled in. kest now explains that error and points at a one-time `--force-conflicts`.
-  Open: detecting foreign-manager fields would need a `managedFields` audit, e.g. a `--drift` report listing fields owned by managers other than `kest` and known controllers.
+  Foreign-manager fields are now reported by `kest drift`, which flags fields owned by hand-run kubectl commands (see the fleet section).
 - **Prune deleted manifests.** Removing a file from a manifest dir leaves the object running; it had to be deleted by hand. `kubectl apply --prune` is legacy and dangerous; ApplySets (`--applyset`, `KUBECTL_APPLYSET=true`) are the modern path. Opt-in per deploy entry (`prune: true`), always shown in `--diff`. Higher risk, so after SSA lands.
 
 ### P2 — scoping and rituals
@@ -39,6 +39,22 @@ A ~30-change upgrade pass (app image bumps, helm chart majors, platform TF roots
   - Retention: snapshots are labeled `kest/deploy=<app>` but never pruned. A `--keep N` would cover it.
   - Restore stays manual (PVC `dataSource`).
 - **`snapshot_skip:` — DONE.** Per-deploy globs on PVC name or `namespace/name` leave volumes out of snapshots; each skipped PVC is printed, and the all-or-nothing error points at it.
+
+## Fleet view: above one root / one app (exploratory)
+
+Applying roots and deploying apps one at a time is almost always the right unit, and kest should keep it that way. The gap is the layer above: knowing the state of everything without running everything by hand. Nothing here is scoped yet; these are the shapes worth evaluating.
+
+- **Drift sweep — DONE.** `kest drift` / `kestci drift` plans every root (`-detailed-exitcode`, no state lock) and checks every deploy, in parallel, then prints one table and exits 0/2/1. Manifest deploys run `kubectl diff`; helm deploys check release status and chart version, plus `helm diff upgrade` when the helm-diff plugin is installed. Guide: [drift.md](drift.md). Open:
+  - **Helm drift without a plugin (next).** Live and values drift for helm needs the helm-diff plugin (`--three-way-merge`); without it only release status and chart version are checked. Instead, render with `helm template` and run the output through the same `kubectl diff` and managed-fields check manifest deploys use. That drops the plugin dependency and gives helm deploys live-edit detection.
+  - **One source for manifest drift.** `kubectl diff` and the server-side dry-run apply are two views of the same operation. Deriving both "what differs" and "who owns it" from the dry-run alone would let a conflicting live edit name the manager that made it, which the forced diff hides, and saves a kubectl call per deploy.
+  - Results aren't kept anywhere CI can read across runs, so there's no "drifted since" or "new since last sweep". `--json` is the hook for that.
+  - **Shared selection.** Drift's `--dir` / `--target` / `--only` filters are a separate, smaller implementation than `swoop.Select`. Sharing it would bring target globs, `--changed`, and one no-match rule to the sweep.
+- **Foreign-field drift — DONE**, as part of the sweep. Fields owned by a `kubectl` / `kubectl-*` field manager are reported per object and path when git doesn't set them (per a server-side dry-run apply as `kest`; an old patch co-owning a git-set field with the same value is harmless), except client-side apply (kest's own manager when `server_side: false`) and `kubectl-rollout`. Open: fields owned by third-party controllers and operators aren't flagged, since telling legitimate controllers from drift needs an allowlist.
+- **Dependency order.** Roots read each other through `terraform_remote_state` and data sources, and apps depend on platform roots. A declared or inferred graph would let a batch apply in order and let `--changed` pull in downstream roots. Inferring from `terraform_remote_state` backend keys is plausible; declaring it in `.kestconfig` is the fallback.
+- **Version inventory.** One report of what's pinned where: tf/tofu pins, provider lock versions, chart versions, image tags. This turns an upgrade cycle into a checklist, and `swoop list` already has half the columns.
+- **Recorded state.** kest already records last plan/apply per root. Extending that to deploys, and to drift results, gives "last known good" and "stale for N days" without re-running anything.
+
+Guardrail: the fleet layer reads and reports by default. Any fleet-wide apply stays an explicit batch with a summary, never an implicit side effect of a sweep.
 
 ## Small fixes shipped alongside
 
@@ -106,7 +122,9 @@ Found along the way:
 - `--changed` fell back to `HEAD` with no `main`/`master`, so a shallow CI checkout reported nothing changed. It now also tries `origin/main` / `origin/master`, then errors.
 - `--changed` only looked at `.tf` files; it now also covers `.tf.json`, `.tfvars`, the lock file and version pins.
 
-Two binaries stays deliberate: a constrained `kestci` surface (no fuzzy, no prompts, ambient creds) says what it is in a workflow file. Open: `--changed` doesn't follow local modules outside a root.
+- `--changed` didn't follow local modules. It now selects a root when any module it calls changed, including modules outside the discovery base (the diff is repo-wide, not `--relative`).
+
+Two binaries stays deliberate: a constrained `kestci` surface (no fuzzy, no prompts, ambient creds) says what it is in a workflow file.
 
 ## kestci CI design (AWS-centric, the original intent)
 

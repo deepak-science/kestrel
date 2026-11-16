@@ -13,7 +13,7 @@ func TestMatchChangedFiles_SingleRoot(t *testing.T) {
 		{Path: filepath.Join("prd", "vpc"), AbsPath: filepath.Join(base, "prd", "vpc")},
 	}
 
-	changed := matchChangedFiles(roots, base, []string{
+	changed := matchChangedFiles(roots, nil, base, []string{
 		filepath.Join("dev", "vpc", "extra.tf"),
 	})
 
@@ -33,7 +33,7 @@ func TestMatchChangedFiles_MultipleRoots(t *testing.T) {
 		{Path: filepath.Join("prd", "vpc"), AbsPath: filepath.Join(base, "prd", "vpc")},
 	}
 
-	changed := matchChangedFiles(roots, base, []string{
+	changed := matchChangedFiles(roots, nil, base, []string{
 		filepath.Join("dev", "vpc", "root.tf"),
 		filepath.Join("dev", "rds", "extra.tf"),
 	})
@@ -49,7 +49,7 @@ func TestMatchChangedFiles_IgnoresNonTF(t *testing.T) {
 		{Path: filepath.Join("dev", "vpc"), AbsPath: filepath.Join(base, "dev", "vpc")},
 	}
 
-	changed := matchChangedFiles(roots, base, []string{
+	changed := matchChangedFiles(roots, nil, base, []string{
 		filepath.Join("dev", "vpc", "README.md"),
 		filepath.Join("dev", "vpc", "notes.txt"),
 	})
@@ -65,7 +65,7 @@ func TestMatchChangedFiles_NoMatches(t *testing.T) {
 		{Path: filepath.Join("dev", "vpc"), AbsPath: filepath.Join(base, "dev", "vpc")},
 	}
 
-	changed := matchChangedFiles(roots, base, []string{
+	changed := matchChangedFiles(roots, nil, base, []string{
 		filepath.Join("prd", "vpc", "root.tf"),
 	})
 
@@ -80,7 +80,7 @@ func TestMatchChangedFiles_EmptyFiles(t *testing.T) {
 		{Path: filepath.Join("dev", "vpc"), AbsPath: filepath.Join(base, "dev", "vpc")},
 	}
 
-	changed := matchChangedFiles(roots, base, nil)
+	changed := matchChangedFiles(roots, nil, base, nil)
 	if len(changed) != 0 {
 		t.Fatalf("expected 0 changed roots, got %d", len(changed))
 	}
@@ -93,7 +93,7 @@ func TestMatchChangedFiles_NoDuplicates(t *testing.T) {
 	}
 
 	// Two files in the same root — should still return one root.
-	changed := matchChangedFiles(roots, base, []string{
+	changed := matchChangedFiles(roots, nil, base, []string{
 		filepath.Join("dev", "vpc", "root.tf"),
 		filepath.Join("dev", "vpc", "extra.tf"),
 	})
@@ -197,7 +197,7 @@ func TestMatchChangedFiles_NonTFInputs(t *testing.T) {
 		{Path: "pin", AbsPath: filepath.Join(base, "pin")},
 		{Path: "docs", AbsPath: filepath.Join(base, "docs")},
 	}
-	changed := matchChangedFiles(roots, base, []string{
+	changed := matchChangedFiles(roots, nil, base, []string{
 		filepath.Join("vars", "prod.tfvars"),
 		filepath.Join("lock", ".terraform.lock.hcl"),
 		filepath.Join("pin", ".opentofu-version"),

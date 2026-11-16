@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -34,6 +35,9 @@ type Options struct {
 
 	// CaptureStderr also keeps stderr in Result.Stderr; it still streams to os.Stderr.
 	CaptureStderr bool
+
+	// SilentStderr captures stderr into Result.Stderr without streaming it.
+	SilentStderr bool
 }
 
 // Result returns details from a RunWithOpts call.
@@ -56,7 +60,10 @@ func RunWithOpts(name string, args []string, opts Options) (*Result, error) {
 	cmd.Dir = opts.Dir
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = os.Stderr
-	if opts.CaptureStderr {
+	switch {
+	case opts.SilentStderr:
+		cmd.Stderr = &stderrBuf
+	case opts.CaptureStderr:
 		cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 	}
 
@@ -159,4 +166,26 @@ func exitCodeFromErr(err error) int {
 		return exitErr.ExitCode()
 	}
 	return -1
+}
+
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+// ErrorExcerpt returns the first "Error:" line of a tool's stderr, else its last non-empty line, else fallback's message.
+// Terraform's boxed diagnostics ("│ Error: ...") are unboxed first.
+func ErrorExcerpt(stderr string, fallback error) string {
+	var last string
+	for _, line := range strings.Split(ansiRE.ReplaceAllString(stderr, ""), "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "│╷╵ "))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "Error:") || strings.HasPrefix(line, "error:") {
+			return line
+		}
+		last = line
+	}
+	if last != "" {
+		return last
+	}
+	return fallback.Error()
 }

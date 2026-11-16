@@ -5,10 +5,25 @@ import "github.com/deepak-science/kestrel/internal/config"
 // helmArgs builds the helm args for a deploy: `upgrade --install` for apply
 // (with --atomic --cleanup-on-fail --timeout), or --dry-run for diff.
 func helmArgs(release string, d config.Deploy, res Resolution, action string, extra []string) []string {
-	args := []string{"upgrade", "--install", release, d.Chart}
+	args := append([]string{"upgrade", "--install", release, d.Chart}, helmChartFlags(d, res, true)...)
 
+	if action == ActionDiff {
+		args = append(args, "--dry-run")
+	} else {
+		args = append(args, "--atomic", "--cleanup-on-fail", "--timeout", "5m0s")
+	}
+
+	return append(args, extra...)
+}
+
+// helmChartFlags are the release-location and chart-input flags, shared with `helm diff upgrade`, which has no --create-namespace.
+func helmChartFlags(d config.Deploy, res Resolution, createNamespace bool) []string {
+	var args []string
 	if d.Namespace != "" {
-		args = append(args, "--namespace", d.Namespace, "--create-namespace")
+		args = append(args, "--namespace", d.Namespace)
+		if createNamespace {
+			args = append(args, "--create-namespace")
+		}
 	}
 	if res.KubeContext != "" {
 		args = append(args, "--kube-context", res.KubeContext)
@@ -28,14 +43,7 @@ func helmArgs(release string, d config.Deploy, res Resolution, action string, ex
 	for _, kv := range sortedSetArgs(d.Set) {
 		args = append(args, "--set", kv)
 	}
-
-	if action == ActionDiff {
-		args = append(args, "--dry-run")
-	} else {
-		args = append(args, "--atomic", "--cleanup-on-fail", "--timeout", "5m0s")
-	}
-
-	return append(args, extra...)
+	return args
 }
 
 // FieldManager is the server-side apply field manager kest applies as.
