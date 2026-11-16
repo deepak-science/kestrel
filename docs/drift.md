@@ -24,7 +24,8 @@ check failed, the same contract as `plan -detailed-exitcode`.
 | manifest deploy | `kubectl diff` (server-side for `server_side` deploys) | live objects differ from git |
 | | `kubectl get --show-managed-fields` and a server-side `apply --dry-run=server` | a hand-run kubectl command owns a field git doesn't set |
 | helm deploy | `helm status` | the release is missing, not `deployed`, or on a different chart `version:` |
-| | `helm diff upgrade --three-way-merge --detailed-exitcode` | live objects differ from the rendered chart (only with the [helm-diff](https://github.com/databus23/helm-diff) plugin) |
+| | `helm upgrade --install --dry-run=server`, then the two manifest checks on its output | live objects differ from the rendered chart, or a hand-run kubectl command owns a field the chart doesn't set |
+| | `helm get manifest` | the release has an object the chart no longer renders |
 
 Plans skip the state lock, so a sweep never blocks a real apply. Their output
 is captured, not printed; run `kest swoop plan <root>` to see a drifted root's
@@ -47,17 +48,28 @@ false` deploys, and `kubectl-rollout`, which only stamps `restartedAt`.
 To fold a live edit back into git, add the field to the manifest. To revert it,
 remove the field from the object (`kubectl edit`), since a re-apply won't.
 
-### Helm without helm-diff
+### Helm deploys
 
-Without the plugin, a helm deploy is checked only for release status and chart
-version, and a clean row says `values not compared`. Install the plugin to
-diff values and rendered objects too.
+A helm deploy is rendered the way the next `kest deploy` would render it: a
+server-side dry-run of `helm upgrade --install` with the deploy's chart,
+version, values and `set:` entries. That needs helm 3.13 or newer and no
+plugins. The rendered objects then go through the same `kubectl diff` and
+managed-fields checks as a manifest deploy, so a changed value, an edit made
+outside helm, and a `kubectl patch` of a field the chart never sets all show
+up. Objects the chart places outside the release namespace are checked too.
+
+Hooks aren't part of the rendered manifest and aren't compared. A chart that
+generates a value on every render (a random password, a self-signed
+certificate) reports drift on every sweep. A release that is mid-operation
+(`pending-*`) reports only its status.
 
 ## Narrowing a sweep
 
 - `--only terraform` / `--only deploys`
 - `--dir <top-level dir>` limits roots, like `kest swoop --dir`
 - `--target <target>` limits deploys
+- `--exclude-root <path>` skips a root, or every root under a directory; `--exclude-deploy <name>` skips a deploy.
+  Both repeat, for the checks a runner has no credentials for.
 - `--parallel N` sets how many checks run at once (default 4)
 - `--init` runs `init` on each root first, one at a time, since terraform's
   plugin cache isn't safe for concurrent init. Without it, an uninitialized
@@ -65,7 +77,8 @@ diff values and rendered objects too.
 - `--json` prints the results as a JSON array instead of the table
 
 A `--dir` or `--target` that matches nothing is an error, so a typo can't
-shrink the sweep to whatever is left and report it clean.
+shrink the sweep to whatever is left and report it clean. An exclusion that
+matches nothing is an error too.
 
 `kest drift` refreshes each AWS SSO session once up front. `kestci drift` uses
 ambient credentials like the rest of kestci; a fresh checkout needs `--init`.
@@ -81,5 +94,5 @@ The step fails on exit 1 or 2, which is the alert. For finer handling, branch
 on the exit code as in
 [`examples/ci/github-drift-detection.yml`](examples/ci/github-drift-detection.yml),
 or parse `--json`. If the runner only has credentials for some roots, narrow
-with `--dir` or `--only`, or keep a per-root matrix of `kestci plan --
+with `--dir`, `--only` or `--exclude-root`, or keep a per-root matrix of `kestci plan --
 -detailed-exitcode` as that example does.

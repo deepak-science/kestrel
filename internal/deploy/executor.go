@@ -16,7 +16,7 @@ func helmArgs(release string, d config.Deploy, res Resolution, action string, ex
 	return append(args, extra...)
 }
 
-// helmChartFlags are the release-location and chart-input flags, shared with `helm diff upgrade`, which has no --create-namespace.
+// helmChartFlags are the release-location and chart-input flags, shared with the drift check's dry-run render, which must not create the namespace.
 func helmChartFlags(d config.Deploy, res Resolution, createNamespace bool) []string {
 	var args []string
 	if d.Namespace != "" {

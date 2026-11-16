@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -8,10 +9,10 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/deepak-science/kestrel/internal/config"
 	"github.com/deepak-science/kestrel/internal/runner"
+	"gopkg.in/yaml.v3"
 )
 
 // DriftReport is the read-only drift check for one deploy.
@@ -19,13 +20,11 @@ type DriftReport struct {
 	Drift bool
 	// Details lists what drifted, one line each.
 	Details []string
-	// Note qualifies a clean result, e.g. what the check couldn't compare.
-	Note string
 }
 
 // Drift checks a deploy against the live cluster without changing anything.
 // Manifest deploys run `kubectl diff` and look for fields set by live kubectl edits, which neither diff nor a server-side apply reverts.
-// Helm deploys check release status and chart version, plus a values diff when the helm-diff plugin is installed.
+// Helm deploys check release status and chart version, then put the rendered chart through the same kubectl checks.
 func Drift(cfg *config.Config, name string, d config.Deploy, res Resolution, pol Policy) (DriftReport, error) {
 	if err := d.Validate(name); err != nil {
 		return DriftReport{}, err
@@ -48,29 +47,51 @@ func Drift(cfg *config.Config, name string, d config.Deploy, res Resolution, pol
 	return manifestDrift(d, res, opts)
 }
 
+// manifestSource is what the kubectl checks read: a path, or rendered manifests on stdin.
+type manifestSource struct {
+	// path is passed to -f; "-" reads stdin.
+	path       string
+	stdin      []byte
+	namespace  string
+	serverSide bool
+	// origin names where the desired state comes from, for the report ("git", "chart").
+	origin string
+}
+
 func manifestDrift(d config.Deploy, res Resolution, opts runner.Options) (DriftReport, error) {
+	return kubectlDrift(manifestSource{path: d.Manifests, namespace: d.Namespace, serverSide: d.UsesServerSide(), origin: "git"}, res, opts)
+}
+
+func kubectlDrift(src manifestSource, res Resolution, opts runner.Options) (DriftReport, error) {
 	var rep DriftReport
-	// Without --force-conflicts, a live edit to a field git sets fails a server-side diff with an ownership conflict instead of showing as a difference.
-	diffArgs := kubectlArgs(d.Manifests, res, d.Namespace, kubectlOpts{Diff: true, ServerSide: d.UsesServerSide(), ForceConflicts: d.UsesServerSide()}, nil)
-	r, err := runner.RunWithOpts("kubectl", diffArgs, opts)
+	run := func(args []string) (*runner.Result, error) {
+		o := opts
+		if src.stdin != nil {
+			o.Stdin = bytes.NewReader(src.stdin)
+		}
+		return runner.RunWithOpts("kubectl", args, o)
+	}
+	// Without --force-conflicts, a live edit to a field the source sets fails a server-side diff with an ownership conflict instead of showing as a difference.
+	diffArgs := kubectlArgs(src.path, res, src.namespace, kubectlOpts{Diff: true, ServerSide: src.serverSide, ForceConflicts: src.serverSide}, nil)
+	r, err := run(diffArgs)
 	switch {
 	// kubectl diff exits 1 when differences exist; higher codes are real errors.
 	case r.ExitCode == 1:
 		rep.Drift = true
-		rep.Details = append(rep.Details, "differs from git: "+capList(diffedObjects(r.Stdout), 3))
+		rep.Details = append(rep.Details, "differs from "+src.origin+": "+capList(diffedObjects(r.Stdout), 3))
 	case err != nil:
 		return rep, fmt.Errorf("kubectl diff: %s", runner.ErrorExcerpt(r.Stderr, err))
 	}
 
-	getArgs := append(getWorkloadsArgs(d.Manifests, res, d.Namespace), "--show-managed-fields", "--ignore-not-found")
-	g, err := runner.RunWithOpts("kubectl", getArgs, opts)
+	getArgs := append(getWorkloadsArgs(src.path, res, src.namespace), "--show-managed-fields", "--ignore-not-found")
+	g, err := run(getArgs)
 	if err != nil {
 		return rep, fmt.Errorf("kubectl get: %s", runner.ErrorExcerpt(g.Stderr, err))
 	}
-	// A server-side dry-run as kest shows which fields git sets, whatever the deploy's apply mode.
+	// A server-side dry-run as kest shows which fields the source sets, whatever the deploy's apply mode.
 	// --force-conflicts keeps a conflicting live edit from failing it; kubectl diff already reports those.
-	dryArgs := append(kubectlArgs(d.Manifests, res, d.Namespace, kubectlOpts{ServerSide: true, ForceConflicts: true, JSON: true}, nil), "--dry-run=server", "--show-managed-fields")
-	dry, err := runner.RunWithOpts("kubectl", dryArgs, opts)
+	dryArgs := append(kubectlArgs(src.path, res, src.namespace, kubectlOpts{ServerSide: true, ForceConflicts: true, JSON: true}, nil), "--dry-run=server", "--show-managed-fields")
+	dry, err := run(dryArgs)
 	if err != nil {
 		return rep, fmt.Errorf("kubectl apply --dry-run=server: %s", runner.ErrorExcerpt(dry.Stderr, err))
 	}
@@ -315,20 +336,43 @@ func helmDrift(release string, d config.Deploy, res Resolution, opts runner.Opti
 		rep.Details = append(rep.Details, fmt.Sprintf("chart %s deployed, %s configured", st.Chart.Metadata.Version, d.Version))
 	}
 
-	if !helmDiffAvailable() {
-		rep.Note = "values not compared (install the helm-diff plugin)"
+	// helm refuses even a dry-run upgrade while another operation holds the release.
+	if strings.HasPrefix(st.Info.Status, "pending") {
 		return rep, nil
 	}
-	diffArgs := append([]string{"diff", "upgrade", release, d.Chart}, helmChartFlags(d, res, false)...)
-	// --three-way-merge compares against live objects; the default only compares the stored release manifest, which misses edits made outside helm.
-	diffArgs = append(diffArgs, "--detailed-exitcode", "--suppress-secrets", "--three-way-merge")
-	r, err = runner.RunWithOpts("helm", diffArgs, opts)
-	switch {
-	case r.ExitCode == 2:
+
+	// A server-side dry-run upgrade renders what the next deploy would apply, with the cluster's capabilities and lookups.
+	renderArgs := append([]string{"upgrade", "--install", release, d.Chart}, helmChartFlags(d, res, false)...)
+	renderArgs = append(renderArgs, "--dry-run=server", "-o", "json")
+	r, err = runner.RunWithOpts("helm", renderArgs, opts)
+	if err != nil {
+		return rep, fmt.Errorf("helm upgrade --dry-run=server: %s", runner.ErrorExcerpt(r.Stderr, err))
+	}
+	var rendered struct {
+		Manifest string `json:"manifest"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &rendered); err != nil {
+		return rep, fmt.Errorf("parse helm dry-run output: %w", err)
+	}
+	docs := splitManifest(rendered.Manifest)
+
+	// An object the release has but the chart no longer renders is deleted by the next deploy; kubectl diff can't see it.
+	r, err = runner.RunWithOpts("helm", append([]string{"get", "manifest", release}, helmClusterFlags(d, res)...), opts)
+	if err != nil {
+		return rep, fmt.Errorf("helm get manifest: %s", runner.ErrorExcerpt(r.Stderr, err))
+	}
+	if gone := removedObjects(splitManifest(r.Stdout), docs); len(gone) > 0 {
 		rep.Drift = true
-		rep.Details = append(rep.Details, "differs from config: "+capList(helmDiffObjects(r.Stdout), 3))
-	case err != nil:
-		return rep, fmt.Errorf("helm diff: %s", runner.ErrorExcerpt(r.Stderr, err))
+		rep.Details = append(rep.Details, "no longer in chart: "+capList(gone, 3))
+	}
+
+	for _, src := range helmSources(docs, d.Namespace) {
+		kr, err := kubectlDrift(src, res, opts)
+		if err != nil {
+			return rep, err
+		}
+		rep.Drift = rep.Drift || kr.Drift
+		rep.Details = append(rep.Details, kr.Details...)
 	}
 	return rep, nil
 }
@@ -347,30 +391,67 @@ func helmClusterFlags(d config.Deploy, res Resolution) []string {
 	return args
 }
 
-// helm-diff prints one header per object, e.g. "media, web, Deployment (apps) has changed:".
-var helmDiffHeaderRE = regexp.MustCompile(`^\S+, (\S+), (\S+)(?: \([^)]*\))? has (changed|been added|been removed):`)
-
-func helmDiffObjects(out string) []string {
-	var objs []string
-	for _, line := range strings.Split(out, "\n") {
-		if m := helmDiffHeaderRE.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
-			verb := strings.TrimPrefix(m[3], "been ")
-			objs = append(objs, fmt.Sprintf("%s/%s %s", m[2], m[1], verb))
-		}
-	}
-	return objs
+// manifestDoc is one object of a helm manifest.
+type manifestDoc struct {
+	raw      string
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace"`
+	} `yaml:"metadata"`
 }
 
-var (
-	helmDiffOnce sync.Once
-	helmDiffOK   bool
-)
+var manifestSepRE = regexp.MustCompile(`(?m)^---[ \t]*$`)
 
-// helmDiffAvailable reports whether the helm-diff plugin is installed; checked once per run.
-var helmDiffAvailable = func() bool {
-	helmDiffOnce.Do(func() {
-		_, err := runner.RunWithOpts("helm", []string{"diff", "version"}, runner.Options{CaptureStdout: true, Silent: true, SilentStderr: true})
-		helmDiffOK = err == nil
-	})
-	return helmDiffOK
+// splitManifest splits a multi-document manifest into its objects, dropping empty and comment-only documents.
+func splitManifest(manifest string) []manifestDoc {
+	var docs []manifestDoc
+	for _, raw := range manifestSepRE.Split(manifest, -1) {
+		doc := manifestDoc{}
+		if yaml.Unmarshal([]byte(raw), &doc) != nil || doc.Kind == "" {
+			continue
+		}
+		doc.raw = raw
+		docs = append(docs, doc)
+	}
+	return docs
+}
+
+// removedObjects lists the objects in before that after no longer has, by kind, name and namespace.
+func removedObjects(before, after []manifestDoc) []string {
+	key := func(m manifestDoc) string { return m.Kind + "|" + m.Metadata.Namespace + "|" + m.Metadata.Name }
+	kept := map[string]bool{}
+	for _, m := range after {
+		kept[key(m)] = true
+	}
+	var gone []string
+	for _, m := range before {
+		if !kept[key(m)] {
+			gone = append(gone, m.Kind+"/"+m.Metadata.Name)
+		}
+	}
+	return gone
+}
+
+// helmSources groups rendered objects into kubectl inputs.
+// Objects without a namespace go to the release namespace, where helm puts them.
+// kubectl rejects an object whose own namespace differs from --namespace, so those run without the flag.
+func helmSources(docs []manifestDoc, namespace string) []manifestSource {
+	var release, elsewhere []string
+	for _, m := range docs {
+		if namespace != "" && m.Metadata.Namespace != "" && m.Metadata.Namespace != namespace {
+			elsewhere = append(elsewhere, m.raw)
+		} else {
+			release = append(release, m.raw)
+		}
+	}
+	var out []manifestSource
+	add := func(raws []string, ns string) {
+		if len(raws) > 0 {
+			out = append(out, manifestSource{path: "-", stdin: []byte(strings.Join(raws, "\n---\n")), namespace: ns, serverSide: true, origin: "chart"})
+		}
+	}
+	add(release, namespace)
+	add(elsewhere, "")
+	return out
 }

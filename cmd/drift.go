@@ -24,8 +24,8 @@ then print one table. Nothing is applied, and plans don't take the state lock.
 
 Roots: plan -detailed-exitcode. Manifest deploys: kubectl diff, plus fields set
 by live kubectl edits (edit, patch, scale, ...), which a re-apply doesn't
-revert. Helm deploys: release status and chart version, plus a values diff when
-the helm-diff plugin is installed.
+revert. Helm deploys: release status and chart version, then the same two
+checks on the chart as a dry-run upgrade renders it.
 
 Exits 0 when everything is clean, 2 when anything drifted, 1 when a check failed.`,
 	Args: cobra.NoArgs,
@@ -100,6 +100,8 @@ func init() {
 	driftCmd.Flags().StringVar(&driftFilter.Only, "only", "", "check only terraform roots or only deploys (terraform|deploys)")
 	driftCmd.Flags().StringVar(&driftFilter.Dir, "dir", "", "only roots under this top-level directory")
 	driftCmd.Flags().StringVar(&driftFilter.Target, "target", "", "only deploys to this target")
+	driftCmd.Flags().StringArrayVar(&driftFilter.ExcludeRoots, "exclude-root", nil, "skip this root, or every root under this directory (repeatable)")
+	driftCmd.Flags().StringArrayVar(&driftFilter.ExcludeDeploys, "exclude-deploy", nil, "skip this deploy (repeatable)")
 	driftCmd.Flags().BoolVar(&driftInit, "init", false, "run terraform init on each root first, one at a time")
 	driftCmd.Flags().IntVar(&driftParallel, "parallel", 4, "checks to run at once")
 	driftCmd.Flags().BoolVar(&driftJSON, "json", false, "print results as JSON instead of a table")

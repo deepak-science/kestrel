@@ -163,14 +163,27 @@ func TestSelect(t *testing.T) {
 	if err := (Filter{Only: "helm"}).Validate(); err == nil {
 		t.Error("--only helm accepted")
 	}
+	r, d, err = Select(cfg, roots, Filter{ExcludeRoots: []string{"prd/"}, ExcludeDeploys: []string{"db"}})
+	if err != nil || len(r) != 1 || r[0].Path != "dev/vpc" || len(d) != 1 || d[0] != "web" {
+		t.Errorf("Select(excludes) = %v, %v, %v", r, d, err)
+	}
+	// An excluded root outside the --dir selection is still a known root, not a typo.
+	if r, _, err := Select(cfg, roots, Filter{Dir: "dev", ExcludeRoots: []string{"prd/vpc"}}); err != nil || len(r) != 1 {
+		t.Errorf("exclude outside --dir = %v, %v", r, err)
+	}
 	// A filter that matches nothing must not shrink the sweep to whatever else is left.
 	for name, f := range map[string]Filter{
-		"unmatched --dir":          {Dir: "typo"},
-		"unmatched --target":       {Target: "typo"},
-		"--dir with only deploys":  {Only: "deploys", Dir: "dev"},
-		"--target with only tf":    {Only: "terraform", Target: "dev"},
-		"unmatched --dir, tf only": {Only: "terraform", Dir: "typo"},
-		"unmatched --target, apps": {Only: "deploys", Target: "typo"},
+		"unmatched --exclude-root":   {ExcludeRoots: []string{"prd/vp"}},
+		"unmatched --exclude-deploy": {ExcludeDeploys: []string{"typo"}},
+		"--exclude-root, apps only":  {Only: "deploys", ExcludeRoots: []string{"prd"}},
+		"--exclude-deploy, tf only":  {Only: "terraform", ExcludeDeploys: []string{"db"}},
+		"everything excluded":        {Only: "terraform", ExcludeRoots: []string{"dev", "prd"}},
+		"unmatched --dir":            {Dir: "typo"},
+		"unmatched --target":         {Target: "typo"},
+		"--dir with only deploys":    {Only: "deploys", Dir: "dev"},
+		"--target with only tf":      {Only: "terraform", Target: "dev"},
+		"unmatched --dir, tf only":   {Only: "terraform", Dir: "typo"},
+		"unmatched --target, apps":   {Only: "deploys", Target: "typo"},
 	} {
 		if _, _, err := Select(cfg, roots, f); err == nil {
 			t.Errorf("%s: no error", name)

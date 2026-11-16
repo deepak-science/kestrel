@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -156,7 +157,7 @@ func (s Sweep) checkDeploy(name string) Item {
 	case rep.Drift:
 		it.Status, it.Details = Drift, rep.Details
 	default:
-		it.Status, it.Summary = Clean, rep.Note
+		it.Status = Clean
 	}
 	return it
 }
@@ -222,6 +223,12 @@ type Filter struct {
 	Only   string
 	Dir    string
 	Target string
+	// ExcludeRoots and ExcludeDeploys drop checks from whatever the other filters select.
+	ExcludeRoots   []string
+	ExcludeDeploys []string
+
+	// allRoots is every discovered root, kept by Select to validate ExcludeRoots.
+	allRoots []swoop.Root
 }
 
 // Validate rejects an unknown Only.
@@ -239,6 +246,7 @@ func (f Filter) WantRoots() bool { return f.Only != "deploys" }
 // Select applies the filter to discovered roots and the configured deploys.
 // A --dir or --target that matches nothing is an error: a sweep that quietly drops what was asked for reads as clean.
 func Select(cfg *config.Config, roots []swoop.Root, f Filter) ([]swoop.Root, []string, error) {
+	f.allRoots = roots
 	switch {
 	case !f.WantRoots() && f.Dir != "":
 		return nil, nil, errors.New("--dir selects terraform roots; it can't be combined with --only deploys")
@@ -261,10 +269,60 @@ func Select(cfg *config.Config, roots []swoop.Root, f Filter) ([]swoop.Root, []s
 			}
 		}
 	}
+	var err error
+	if roots, err = excludeRoots(roots, f); err != nil {
+		return nil, nil, err
+	}
+	if deploys, err = excludeDeploys(cfg, deploys, f); err != nil {
+		return nil, nil, err
+	}
 	if len(roots) == 0 && len(deploys) == 0 {
 		return nil, nil, errors.New("nothing to check: no terraform roots or deploys matched")
 	}
 	return roots, deploys, nil
+}
+
+// excludeRoots drops roots named by --exclude-root: a root path, or a directory above it.
+// Each exclusion must match a discovered root, selected or not, so a typo can't leave in a root that was meant to be skipped.
+func excludeRoots(roots []swoop.Root, f Filter) ([]swoop.Root, error) {
+	if len(f.ExcludeRoots) == 0 {
+		return roots, nil
+	}
+	if !f.WantRoots() {
+		return nil, errors.New("--exclude-root can't be combined with --only deploys")
+	}
+	under := func(r swoop.Root, ex string) bool {
+		ex = strings.TrimSuffix(ex, "/")
+		return r.Path == ex || strings.HasPrefix(r.Path, ex+"/")
+	}
+	for _, ex := range f.ExcludeRoots {
+		if !slices.ContainsFunc(f.allRoots, func(r swoop.Root) bool { return under(r, ex) }) {
+			return nil, fmt.Errorf("--exclude-root %q matched no terraform roots", ex)
+		}
+	}
+	return slices.DeleteFunc(slices.Clone(roots), func(r swoop.Root) bool {
+		return slices.ContainsFunc(f.ExcludeRoots, func(ex string) bool { return under(r, ex) })
+	}), nil
+}
+
+// excludeDeploys drops deploys named by --exclude-deploy; each must be a configured deploy.
+func excludeDeploys(cfg *config.Config, deploys []string, f Filter) ([]string, error) {
+	if len(f.ExcludeDeploys) == 0 {
+		return deploys, nil
+	}
+	if f.Only == "terraform" {
+		return nil, errors.New("--exclude-deploy can't be combined with --only terraform")
+	}
+	var known []string
+	if cfg != nil {
+		known = cfg.DeployNames()
+	}
+	for _, ex := range f.ExcludeDeploys {
+		if !slices.Contains(known, ex) {
+			return nil, fmt.Errorf("--exclude-deploy %q is not a configured deploy", ex)
+		}
+	}
+	return slices.DeleteFunc(slices.Clone(deploys), func(d string) bool { return slices.Contains(f.ExcludeDeploys, d) }), nil
 }
 
 // Report prints items as a table (or JSON) to stdout and returns the exit contract from Result.
