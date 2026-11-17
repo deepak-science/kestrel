@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
@@ -29,6 +30,9 @@ type Config struct {
 	// target via a helm chart or a directory of raw manifests; the executor is
 	// inferred from which source is set. See internal/deploy.
 	Deploys map[string]Deploy `yaml:"deploys,omitempty"`
+
+	// Drift configures the `drift` sweep (project config).
+	Drift DriftConfig `yaml:"drift,omitempty"`
 
 	// Raw layers preserved for source-aware commands (not serialised).
 	ProjectTargets map[string]TargetConfig `yaml:"-"`
@@ -212,6 +216,53 @@ type SwoopConfig struct {
 	SortOrder string `yaml:"sort_order,omitempty"`
 }
 
+// DriftConfig lists the checks a drift sweep skips.
+type DriftConfig struct {
+	ExcludeRoots   []RootExclusion   `yaml:"exclude_roots,omitempty"`
+	ExcludeDeploys []DeployExclusion `yaml:"exclude_deploys,omitempty"`
+}
+
+// RootExclusion skips a root, or every root under a directory.
+type RootExclusion struct {
+	Path   string `yaml:"path"`
+	Reason string `yaml:"reason"`
+	// Only limits the exclusion to one binary: "kest" or "kestci". Empty means both.
+	Only string `yaml:"only,omitempty"`
+}
+
+// DeployExclusion skips a deploy.
+type DeployExclusion struct {
+	Name   string `yaml:"name"`
+	Reason string `yaml:"reason"`
+	Only   string `yaml:"only,omitempty"`
+}
+
+// Validate requires each exclusion to name its subject and give a reason, so a skipped check is never unexplained.
+func (d DriftConfig) Validate() error {
+	check := func(key, subject, reason, only string) error {
+		switch {
+		case subject == "":
+			return fmt.Errorf("drift.%s: an entry names nothing to exclude", key)
+		case strings.TrimSpace(reason) == "":
+			return fmt.Errorf("drift.%s %q: reason is required", key, subject)
+		case only != "" && only != "kest" && only != "kestci":
+			return fmt.Errorf("drift.%s %q: only must be kest or kestci, not %q", key, subject, only)
+		}
+		return nil
+	}
+	for _, e := range d.ExcludeRoots {
+		if err := check("exclude_roots", e.Path, e.Reason, e.Only); err != nil {
+			return err
+		}
+	}
+	for _, e := range d.ExcludeDeploys {
+		if err := check("exclude_deploys", e.Name, e.Reason, e.Only); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ResolvedTarget holds the resolved access methods for a target.
 type ResolvedTarget struct {
 	KubeContext string
@@ -359,6 +410,9 @@ func compose(user, project *Config) *Config {
 	if len(project.Deploys) > 0 {
 		out.Deploys = project.Deploys
 	}
+
+	// Drift exclusions describe the project's roots and deploys, so they come from project config only.
+	out.Drift = project.Drift
 
 	// AWS and Kubernetes come from user config (already in out via *user).
 

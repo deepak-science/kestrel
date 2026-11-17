@@ -22,6 +22,8 @@ const (
 	Clean = "clean"
 	Drift = "drift"
 	Error = "error"
+	// Skipped is an excluded check; Summary holds the reason.
+	Skipped = "skipped"
 )
 
 // Item is one checked root or deploy.
@@ -162,7 +164,7 @@ func (s Sweep) checkDeploy(name string) Item {
 	return it
 }
 
-// Counts tallies items by status.
+// Counts tallies checked items by status; skipped items are in none of the three.
 func Counts(items []Item) (clean, drifted, errored int) {
 	for _, it := range items {
 		switch it.Status {
@@ -179,10 +181,10 @@ func Counts(items []Item) (clean, drifted, errored int) {
 
 // Result maps a sweep to the exit contract: an error if any check failed, else swoop.ErrChanges if anything drifted.
 func Result(items []Item) error {
-	_, drifted, errored := Counts(items)
+	clean, drifted, errored := Counts(items)
 	switch {
 	case errored > 0:
-		return fmt.Errorf("%d of %d check(s) failed", errored, len(items))
+		return fmt.Errorf("%d of %d check(s) failed", errored, clean+drifted+errored)
 	case drifted > 0:
 		return swoop.ErrChanges
 	}
@@ -208,7 +210,12 @@ func PrintTable(w io.Writer, items []Item) {
 	}
 	_ = tw.Flush()
 	clean, drifted, errored := Counts(items)
-	_, _ = fmt.Fprintf(w, "\n%d checked: %d clean, %d drifted, %d errored\n", len(items), clean, drifted, errored)
+	checked := clean + drifted + errored
+	_, _ = fmt.Fprintf(w, "\n%d checked: %d clean, %d drifted, %d errored", checked, clean, drifted, errored)
+	if skipped := len(items) - checked; skipped > 0 {
+		_, _ = fmt.Fprintf(w, "; %d skipped", skipped)
+	}
+	_, _ = fmt.Fprintln(w)
 }
 
 // PrintJSON writes the items as a JSON array.
@@ -223,12 +230,31 @@ type Filter struct {
 	Only   string
 	Dir    string
 	Target string
-	// ExcludeRoots and ExcludeDeploys drop checks from whatever the other filters select.
+	// ExcludeRoots and ExcludeDeploys drop checks from whatever the other filters select, on top of the project's drift: exclusions.
 	ExcludeRoots   []string
 	ExcludeDeploys []string
+	// CI is the kestci posture, which decides whether a configured exclusion's only: applies.
+	CI bool
 
-	// allRoots is every discovered root, kept by Select to validate ExcludeRoots.
+	// allRoots is every discovered root, kept by Select to validate root exclusions.
 	allRoots []swoop.Root
+}
+
+// Selection is what a sweep checks, plus the excluded checks it would otherwise have run.
+type Selection struct {
+	Roots   []swoop.Root
+	Deploys []string
+	Skipped []Item
+}
+
+// exclusion is one configured or flag-given exclusion.
+type exclusion struct {
+	subject string
+	reason  string
+	// source names where it came from, for errors.
+	source string
+	// active is false for a configured exclusion that belongs to the other binary; it is still validated.
+	active bool
 }
 
 // Validate rejects an unknown Only.
@@ -243,86 +269,128 @@ func (f Filter) Validate() error {
 // WantRoots reports whether the caller needs to discover roots.
 func (f Filter) WantRoots() bool { return f.Only != "deploys" }
 
-// Select applies the filter to discovered roots and the configured deploys.
+func (f Filter) applies(only string) bool {
+	return only == "" || (only == "kestci") == f.CI
+}
+
+// Select applies the filter and the project's drift: exclusions to discovered roots and the configured deploys.
 // A --dir or --target that matches nothing is an error: a sweep that quietly drops what was asked for reads as clean.
-func Select(cfg *config.Config, roots []swoop.Root, f Filter) ([]swoop.Root, []string, error) {
+func Select(cfg *config.Config, roots []swoop.Root, f Filter) (Selection, error) {
+	var sel Selection
+	if cfg != nil {
+		if err := cfg.Drift.Validate(); err != nil {
+			return sel, err
+		}
+	}
 	f.allRoots = roots
 	switch {
 	case !f.WantRoots() && f.Dir != "":
-		return nil, nil, errors.New("--dir selects terraform roots; it can't be combined with --only deploys")
+		return sel, errors.New("--dir selects terraform roots; it can't be combined with --only deploys")
 	case !f.WantRoots():
 		roots = nil
 	case f.Dir != "":
 		if roots = swoop.ResolveByDir(roots, f.Dir); len(roots) == 0 {
-			return nil, nil, fmt.Errorf("--dir %q matched no terraform roots", f.Dir)
+			return sel, fmt.Errorf("--dir %q matched no terraform roots", f.Dir)
 		}
 	}
 	var deploys []string
 	switch {
 	case f.Only == "terraform" && f.Target != "":
-		return nil, nil, errors.New("--target selects deploys; it can't be combined with --only terraform")
+		return sel, errors.New("--target selects deploys; it can't be combined with --only terraform")
 	case f.Only != "terraform" && cfg != nil:
 		deploys = cfg.DeployNames()
 		if f.Target != "" {
 			if deploys = cfg.DeploysForTarget(f.Target); len(deploys) == 0 {
-				return nil, nil, fmt.Errorf("--target %q matched no deploys", f.Target)
+				return sel, fmt.Errorf("--target %q matched no deploys", f.Target)
 			}
 		}
 	}
 	var err error
-	if roots, err = excludeRoots(roots, f); err != nil {
-		return nil, nil, err
+	if sel.Roots, sel.Skipped, err = excludeRoots(cfg, roots, f); err != nil {
+		return Selection{}, err
 	}
-	if deploys, err = excludeDeploys(cfg, deploys, f); err != nil {
-		return nil, nil, err
+	var skipped []Item
+	if sel.Deploys, skipped, err = excludeDeploys(cfg, deploys, f); err != nil {
+		return Selection{}, err
 	}
-	if len(roots) == 0 && len(deploys) == 0 {
-		return nil, nil, errors.New("nothing to check: no terraform roots or deploys matched")
+	sel.Skipped = append(sel.Skipped, skipped...)
+	if len(sel.Roots) == 0 && len(sel.Deploys) == 0 {
+		return Selection{}, errors.New("nothing to check: no terraform roots or deploys matched")
 	}
-	return roots, deploys, nil
+	return sel, nil
 }
 
-// excludeRoots drops roots named by --exclude-root: a root path, or a directory above it.
+// excludeRoots splits roots into kept and skipped. An exclusion names a root path, or a directory above it.
 // Each exclusion must match a discovered root, selected or not, so a typo can't leave in a root that was meant to be skipped.
-func excludeRoots(roots []swoop.Root, f Filter) ([]swoop.Root, error) {
-	if len(f.ExcludeRoots) == 0 {
-		return roots, nil
-	}
+func excludeRoots(cfg *config.Config, roots []swoop.Root, f Filter) ([]swoop.Root, []Item, error) {
 	if !f.WantRoots() {
-		return nil, errors.New("--exclude-root can't be combined with --only deploys")
+		if len(f.ExcludeRoots) > 0 {
+			return nil, nil, errors.New("--exclude-root can't be combined with --only deploys")
+		}
+		// Roots weren't discovered, so configured exclusions have nothing to match against.
+		return roots, nil, nil
 	}
-	under := func(r swoop.Root, ex string) bool {
-		ex = strings.TrimSuffix(ex, "/")
-		return r.Path == ex || strings.HasPrefix(r.Path, ex+"/")
-	}
-	for _, ex := range f.ExcludeRoots {
-		if !slices.ContainsFunc(f.allRoots, func(r swoop.Root) bool { return under(r, ex) }) {
-			return nil, fmt.Errorf("--exclude-root %q matched no terraform roots", ex)
+	var exs []exclusion
+	if cfg != nil {
+		for _, e := range cfg.Drift.ExcludeRoots {
+			exs = append(exs, exclusion{e.Path, e.Reason, "drift.exclude_roots", f.applies(e.Only)})
 		}
 	}
-	return slices.DeleteFunc(slices.Clone(roots), func(r swoop.Root) bool {
-		return slices.ContainsFunc(f.ExcludeRoots, func(ex string) bool { return under(r, ex) })
-	}), nil
+	for _, ex := range f.ExcludeRoots {
+		exs = append(exs, exclusion{ex, "--exclude-root", "--exclude-root", true})
+	}
+	under := func(r swoop.Root, ex exclusion) bool {
+		dir := strings.TrimSuffix(ex.subject, "/")
+		return r.Path == dir || strings.HasPrefix(r.Path, dir+"/")
+	}
+	for _, ex := range exs {
+		if !slices.ContainsFunc(f.allRoots, func(r swoop.Root) bool { return under(r, ex) }) {
+			return nil, nil, fmt.Errorf("%s %q matched no terraform roots", ex.source, ex.subject)
+		}
+	}
+	var kept []swoop.Root
+	var skipped []Item
+	for _, r := range roots {
+		if i := slices.IndexFunc(exs, func(ex exclusion) bool { return ex.active && under(r, ex) }); i >= 0 {
+			skipped = append(skipped, Item{Kind: "root", Name: r.Path, Status: Skipped, Summary: exs[i].reason})
+		} else {
+			kept = append(kept, r)
+		}
+	}
+	return kept, skipped, nil
 }
 
-// excludeDeploys drops deploys named by --exclude-deploy; each must be a configured deploy.
-func excludeDeploys(cfg *config.Config, deploys []string, f Filter) ([]string, error) {
-	if len(f.ExcludeDeploys) == 0 {
-		return deploys, nil
+// excludeDeploys splits deploys into kept and skipped; each exclusion must name a configured deploy.
+func excludeDeploys(cfg *config.Config, deploys []string, f Filter) ([]string, []Item, error) {
+	if len(f.ExcludeDeploys) > 0 && f.Only == "terraform" {
+		return nil, nil, errors.New("--exclude-deploy can't be combined with --only terraform")
 	}
-	if f.Only == "terraform" {
-		return nil, errors.New("--exclude-deploy can't be combined with --only terraform")
-	}
+	var exs []exclusion
 	var known []string
 	if cfg != nil {
 		known = cfg.DeployNames()
-	}
-	for _, ex := range f.ExcludeDeploys {
-		if !slices.Contains(known, ex) {
-			return nil, fmt.Errorf("--exclude-deploy %q is not a configured deploy", ex)
+		for _, e := range cfg.Drift.ExcludeDeploys {
+			exs = append(exs, exclusion{e.Name, e.Reason, "drift.exclude_deploys", f.applies(e.Only)})
 		}
 	}
-	return slices.DeleteFunc(slices.Clone(deploys), func(d string) bool { return slices.Contains(f.ExcludeDeploys, d) }), nil
+	for _, ex := range f.ExcludeDeploys {
+		exs = append(exs, exclusion{ex, "--exclude-deploy", "--exclude-deploy", true})
+	}
+	for _, ex := range exs {
+		if !slices.Contains(known, ex.subject) {
+			return nil, nil, fmt.Errorf("%s %q is not a configured deploy", ex.source, ex.subject)
+		}
+	}
+	var kept []string
+	var skipped []Item
+	for _, d := range deploys {
+		if i := slices.IndexFunc(exs, func(ex exclusion) bool { return ex.active && ex.subject == d }); i >= 0 {
+			skipped = append(skipped, Item{Kind: "deploy", Name: d, Status: Skipped, Summary: exs[i].reason})
+		} else {
+			kept = append(kept, d)
+		}
+	}
+	return kept, skipped, nil
 }
 
 // Report prints items as a table (or JSON) to stdout and returns the exit contract from Result.

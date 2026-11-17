@@ -735,3 +735,35 @@ func TestCompose_ProjectOverridesVersionManager(t *testing.T) {
 		t.Errorf("project manager override: got %q, want tofuenv", out.Terraform.VersionManager)
 	}
 }
+
+func TestDriftExclusions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.yaml")
+	if err := os.WriteFile(path, []byte(`
+drift:
+  exclude_roots:
+    - path: prd
+      reason: CI role can't plan prd
+      only: kestci
+  exclude_deploys:
+    - name: grafana
+      reason: chart generates a password per render
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A global config can't add exclusions.
+	user := &Config{Drift: DriftConfig{ExcludeRoots: []RootExclusion{{Path: "dev", Reason: "r"}}}}
+	d := compose(user, project).Drift
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.ExcludeRoots) != 1 || d.ExcludeRoots[0] != (RootExclusion{Path: "prd", Reason: "CI role can't plan prd", Only: "kestci"}) {
+		t.Errorf("exclude_roots = %+v", d.ExcludeRoots)
+	}
+	if len(d.ExcludeDeploys) != 1 || d.ExcludeDeploys[0].Name != "grafana" {
+		t.Errorf("exclude_deploys = %+v", d.ExcludeDeploys)
+	}
+}
