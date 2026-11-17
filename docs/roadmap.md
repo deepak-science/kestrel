@@ -48,6 +48,7 @@ Applying roots and deploying apps one at a time is almost always the right unit,
   - **Helm drift without a plugin — DONE.** The chart is rendered with a server-side dry-run of `helm upgrade --install` (cluster capabilities and lookups, unlike `helm template`) and the output goes through the same `kubectl diff` and managed-fields check manifest deploys use, so helm deploys get live-edit detection and need no helm-diff plugin. Objects the release has but the chart no longer renders are reported from `helm get manifest`. Verified on a live cluster with helm 3 and 4. Open: a chart that generates values per render (random passwords, certs) always reports drift; an ignore list per deploy would cover it.
   - **One source for manifest drift.** `kubectl diff` and the server-side dry-run apply are two views of the same operation. Deriving both "what differs" and "who owns it" from the dry-run alone would let a conflicting live edit name the manager that made it, which the forced diff hides, and saves a kubectl call per deploy.
   - Results aren't kept anywhere CI can read across runs, so there's no "drifted since" or "new since last sweep". `--json` is the hook for that.
+  - **Exclusions in project config.** `--exclude-root` / `--exclude-deploy` live only on the command line, so the list of checks a sweep skips sits in a CI workflow, away from the roots it describes, and a local sweep doesn't share it. A `drift:` block in `.kestconfig` would hold them, each with a reason. Two things to settle: an exclusion often applies to one posture only (a root CI's read-only credentials can't plan is still worth sweeping locally), so entries need a `kestci`-only form; and a configured exclusion should show in the table as skipped with its reason rather than vanish, so a sweep never reads as covering more than it did. Flags add to the configured list.
   - **Shared selection.** Drift's `--dir` / `--target` / `--only` filters are a separate, smaller implementation than `swoop.Select`. Sharing it would bring target globs, `--changed`, and one no-match rule to the sweep.
 - **Foreign-field drift — DONE**, as part of the sweep. Fields owned by a `kubectl` / `kubectl-*` field manager are reported per object and path when git doesn't set them (per a server-side dry-run apply as `kest`; an old patch co-owning a git-set field with the same value is harmless), except client-side apply (kest's own manager when `server_side: false`) and `kubectl-rollout`. Open: fields owned by third-party controllers and operators aren't flagged, since telling legitimate controllers from drift needs an allowlist.
 - **Dependency order.** Roots read each other through `terraform_remote_state` and data sources, and apps depend on platform roots. A declared or inferred graph would let a batch apply in order and let `--changed` pull in downstream roots. Inferring from `terraform_remote_state` backend keys is plausible; declaring it in `.kestconfig` is the fallback.
@@ -78,6 +79,18 @@ Notes:
 - Each guard consults config before erroring; `--force` stays as a master override on the CLI.
 - `kest doctor` should surface a loud warning whenever any of these are disabled, so a misconfigured machine is visible.
 - Project-level `.kestconfig` must not be allowed to flip these — otherwise a repo could ship "no CI required" to everyone.
+
+## Deprecate the runnable container image
+
+Every CI run builds the ghcr image on both linux targets (`nix build .#docker`, pull requests included), and every release publishes it (`publish-image`). It bundles terraform, opentofu, helm, kubectl, aws and git, so it's the slowest part of the build, and it buys little: the release binaries, `install.sh`, the Homebrew tap and the flake cover the ways kest is installed, and a CI job can fetch `kestci` with one `curl`.
+
+Proposed order:
+
+- Stop building it on pull requests and branch pushes; build only on tags. That recovers most of the CI time with no user-visible change.
+- Mark it deprecated in the README and [docker.md](docker.md), and keep publishing for a release or two.
+- Remove the `docker` flake output, `publish-image`, `scripts/deploy-image.sh` and docker.md. Published tags stay pullable.
+
+Open: whether a slim `kestci`-only image (no bundled tools) is worth keeping for CI systems that want a job image.
 
 ## `swoop list` AWS column should reflect what apply actually uses
 
