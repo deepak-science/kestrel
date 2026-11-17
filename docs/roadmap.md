@@ -82,11 +82,11 @@ Notes:
 
 ## Deprecate the runnable container image
 
-Every CI run builds the ghcr image on both linux targets (`nix build .#docker`, pull requests included), and every release publishes it (`publish-image`). It bundles terraform, opentofu, helm, kubectl, aws and git, so it's the slowest part of the build, and it buys little: the release binaries, `install.sh`, the Homebrew tap and the flake cover the ways kest is installed, and a CI job can fetch `kestci` with one `curl`.
+Every release builds the ghcr image on both linux targets (`nix build .#docker`) and publishes it (`publish-image`). It bundles terraform, opentofu, helm, kubectl, aws and git, so it's the slowest part of the build, and it buys little: the release binaries, `install.sh`, the Homebrew tap and the flake cover the ways kest is installed, and a CI job can fetch `kestci` with one `curl`.
 
 Proposed order:
 
-- Stop building it on pull requests and branch pushes; build only on tags. That recovers most of the CI time with no user-visible change.
+- **DONE.** CI builds it on tags only, not on pull requests or branch pushes. That recovers most of the CI time with no user-visible change. An image build break now surfaces at release time, after the binaries build.
 - Mark it deprecated in the README and [docker.md](docker.md), and keep publishing for a release or two.
 - Remove the `docker` flake output, `publish-image`, `scripts/deploy-image.sh` and docker.md. Published tags stay pullable.
 
