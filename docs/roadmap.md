@@ -92,6 +92,16 @@ Proposed order:
 
 Open: whether a slim `kestci`-only image (no bundled tools) is worth keeping for CI systems that want a job image.
 
+## Dependabot Go bumps don't reach the nix build
+
+Dependabot's gomod updates touch `go.mod` / `go.sum` but not `gomod2nix.toml`, so a merged bump doesn't take until someone runs `just chores`. CI stays green on the stale toml (the x/term bump in #66 passed), so nothing flags it.
+
+Options, cheapest first:
+
+- **Staleness check in CI.** Run `gomod2nix` and fail on `git diff --exit-code gomod2nix.toml`. Needs no secrets, so it works on Dependabot-triggered runs; the PR goes red and the fix is still manual.
+- **Fix-up workflow.** On Dependabot gomod PRs, run `just chores` and push the result to the PR branch with the release App token, so CI re-runs on the fixed commit. Dependabot-triggered runs only see Dependabot secrets, so the App credentials would need to be added there too.
+- Not `buildGoModule` with `vendorHash`: it has the same problem with a single hash in place of the toml.
+
 ## `swoop list` AWS column should reflect what apply actually uses
 
 **DONE.** `swoop list`, the TUI, `kest swoop` and `kestci` all resolve through `swoop.EffectiveProfiles` (provider profile plus the S3-backend `assume_role` fallback). Open: mark backend-only resolution distinctly (e.g. `homelab (state)`), since it's the state profile, not necessarily a provider one.
