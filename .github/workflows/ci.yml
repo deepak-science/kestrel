@@ -9,6 +9,25 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  gomod2nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-linux-amd64-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-linux-amd64-
+          # Restore only; saving a smaller store under the build's key would evict its cache.
+          save: false
+      - name: Check gomod2nix.toml is current
+        run: |
+          nix develop --command gomod2nix
+          git diff --exit-code gomod2nix.toml || {
+            echo "::error file=gomod2nix.toml::stale; run 'just chores' and commit"
+            exit 1
+          }
   build:
     strategy:
       fail-fast: false
