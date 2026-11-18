@@ -51,7 +51,8 @@ func ciDrift() error {
 		}
 		swoop.EnrichWithAccountIDs(roots, baseDir)
 	}
-	roots, deploys, err := drift.Select(cfg, roots, driftFilter)
+	driftFilter.CI = true
+	sel, err := drift.Select(cfg, roots, driftFilter)
 	if err != nil {
 		return err
 	}
@@ -63,16 +64,16 @@ func ciDrift() error {
 		Ambient:     true,
 		Init:        driftInit,
 		Parallel:    driftParallel,
-	}.Run(roots, deploys)
-	return drift.Report(items, driftJSON)
+	}.Run(sel.Roots, sel.Deploys)
+	return drift.Report(append(items, sel.Skipped...), driftJSON)
 }
 
 func init() {
 	driftCmd.Flags().StringVar(&driftFilter.Only, "only", "", "check only terraform roots or only deploys (terraform|deploys)")
 	driftCmd.Flags().StringVar(&driftFilter.Dir, "dir", "", "only roots under this top-level directory")
 	driftCmd.Flags().StringVar(&driftFilter.Target, "target", "", "only deploys to this target")
-	driftCmd.Flags().StringArrayVar(&driftFilter.ExcludeRoots, "exclude-root", nil, "skip this root, or every root under this directory (repeatable)")
-	driftCmd.Flags().StringArrayVar(&driftFilter.ExcludeDeploys, "exclude-deploy", nil, "skip this deploy (repeatable)")
+	driftCmd.Flags().StringArrayVar(&driftFilter.ExcludeRoots, "exclude-root", nil, "skip this root, or every root under this directory, on top of drift.exclude_roots (repeatable)")
+	driftCmd.Flags().StringArrayVar(&driftFilter.ExcludeDeploys, "exclude-deploy", nil, "skip this deploy, on top of drift.exclude_deploys (repeatable)")
 	driftCmd.Flags().BoolVar(&driftInit, "init", false, "run terraform init on each root first, one at a time")
 	driftCmd.Flags().IntVar(&driftParallel, "parallel", 4, "checks to run at once")
 	driftCmd.Flags().BoolVar(&driftJSON, "json", false, "print results as JSON instead of a table")

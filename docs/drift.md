@@ -69,7 +69,7 @@ certificate) reports drift on every sweep. A release that is mid-operation
 - `--dir <top-level dir>` limits roots, like `kest swoop --dir`
 - `--target <target>` limits deploys
 - `--exclude-root <path>` skips a root, or every root under a directory; `--exclude-deploy <name>` skips a deploy.
-  Both repeat, for the checks a runner has no credentials for.
+  Both repeat, and add to the [exclusions in `.kestconfig`](#exclusions).
 - `--parallel N` sets how many checks run at once (default 4)
 - `--init` runs `init` on each root first, one at a time, since terraform's
   plugin cache isn't safe for concurrent init. Without it, an uninitialized
@@ -79,6 +79,46 @@ certificate) reports drift on every sweep. A release that is mid-operation
 A `--dir` or `--target` that matches nothing is an error, so a typo can't
 shrink the sweep to whatever is left and report it clean. An exclusion that
 matches nothing is an error too.
+
+### Exclusions
+
+Checks a sweep should always skip belong in the project's `.kestconfig`, next
+to the roots and deploys they describe, each with a reason:
+
+```yaml
+drift:
+  exclude_roots:
+    - path: prd              # a root, or every root under a directory
+      reason: the CI role can't read prd state
+      only: kestci
+    - path: dev/dns
+      reason: provider needs the VPN
+  exclude_deploys:
+    - name: grafana
+      reason: chart generates a password on every render
+```
+
+`reason` is required. `only: kestci` or `only: kest` limits an entry to that
+binary, for a check one posture can't run but the other can; without it the
+entry applies to both. The global config can't set exclusions.
+
+An excluded check stays in the table as `SKIPPED` with its reason, and in
+`--json` with `"status": "skipped"`, so a sweep never reads as covering more
+than it did. Skipped checks don't affect the exit code:
+
+```
+KIND    NAME     STATUS   DETAIL
+root    dev/vpc  CLEAN    no changes
+deploy  web      CLEAN
+root    prd/rds  SKIPPED  the CI role can't read prd state
+
+2 checked: 2 clean, 0 drifted, 0 errored; 1 skipped
+```
+
+A check excluded by flag is listed the same way, with the flag as its detail.
+Only checks the other filters select are listed: with `--dir dev`, an excluded
+`prd` root isn't. Every entry must still match a root or name a deploy, whichever
+binary it applies to, so a renamed root can't leave a stale exclusion behind.
 
 `kest drift` refreshes each AWS SSO session once up front. `kestci drift` uses
 ambient credentials like the rest of kestci; a fresh checkout needs `--init`.
@@ -93,6 +133,7 @@ ambient credentials like the rest of kestci; a fresh checkout needs `--init`.
 The step fails on exit 1 or 2, which is the alert. For finer handling, branch
 on the exit code as in
 [`examples/ci/github-drift-detection.yml`](examples/ci/github-drift-detection.yml),
-or parse `--json`. If the runner only has credentials for some roots, narrow
-with `--dir`, `--only` or `--exclude-root`, or keep a per-root matrix of `kestci plan --
--detailed-exitcode` as that example does.
+or parse `--json`. If the runner only has credentials for some roots, list the
+rest under `drift.exclude_roots` with `only: kestci`, narrow with `--dir` or
+`--only`, or keep a per-root matrix of `kestci plan -- -detailed-exitcode` as
+that example does.
