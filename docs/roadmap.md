@@ -66,17 +66,11 @@ Guardrail: the fleet layer reads and reports by default. Any fleet-wide apply st
 
 **DONE.** `guards.require_ci` / `require_clean_worktree` / `require_main_for_prod` in the global config turn single guards off for `kest deploy` and `kest swoop apply`; each defaults to on and `--force` still skips all three. A `.kestconfig` that sets `guards:` fails to load, so a repo can't ship disabled guards. `kest doctor` warns while any guard is off. kestci ignores the setting and always enforces its guards.
 
-## Deprecate the runnable container image
+## Remove the runnable container image
 
-Every release builds the ghcr image on both linux targets (`nix build .#docker`) and publishes it (`publish-image`). It bundles terraform, opentofu, helm, kubectl, aws and git, so it's the slowest part of the build, and it buys little: the release binaries, `install.sh`, the Homebrew tap and the flake cover the ways kest is installed, and a CI job can fetch `kestci` with one `curl`.
+**DONE.** The ghcr image (kest, kestci and the tools they shell out to) is gone: the `docker` flake output, the `publish-image` job, `scripts/deploy-image.sh`, the `just docker*` recipes and docker.md are removed. It was the slowest part of a release and duplicated the release binaries, `install.sh`, the Homebrew tap and the flake. `0.7.0` is the last published image; its tags stay pullable. The example workflows install `kestci` with `install.sh` on a stock runner.
 
-Proposed order:
-
-- **DONE.** CI builds it on tags only, not on pull requests or branch pushes. That recovers most of the CI time with no user-visible change. An image build break now surfaces at release time, after the binaries build.
-- Mark it deprecated in the README and [docker.md](docker.md), and keep publishing for a release or two.
-- Remove the `docker` flake output, `publish-image`, `scripts/deploy-image.sh` and docker.md. Published tags stay pullable.
-
-Open: whether a slim `kestci`-only image (no bundled tools) is worth keeping for CI systems that want a job image.
+Not planned: a slim `kestci`-only job image. Revisit if a CI system needs one.
 
 ## Dependabot Go bumps don't reach the nix build
 

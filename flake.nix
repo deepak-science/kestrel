@@ -74,90 +74,6 @@
             rmdir $out/bin/darwin_arm64
           '';
         };
-      # Runnable container image with kest + kestci and the tools they shell
-      # out to. Build with `nix build .#docker`, then `docker load < result`.
-      # Linux-only (dockerTools); the terraform version is pinned by the
-      # image, so the version manager is disabled via env.
-      dockerImageFor =
-        pkgs:
-        let
-          # gitMinimal still ships with perl and python; strip further.
-          gitReallyMinimal =
-            (pkgs.git.override {
-              perlSupport = false;
-              pythonSupport = false;
-              withManual = false;
-              withpcre2 = false;
-            }).overrideAttrs
-              (_: {
-                # installCheck is broken when perl is disabled
-                doInstallCheck = false;
-              });
-        in
-        pkgs.dockerTools.buildLayeredImage {
-          name = "kest";
-          tag = version;
-          contents = with pkgs; [
-            kest
-            kestci
-            terraform
-            opentofu
-            kubernetes-helm
-            kubectl
-            awscli2
-            gitReallyMinimal
-            gh
-            bashInteractive
-            coreutils
-            dockerTools.caCertificates
-            (dockerTools.fakeNss.override {
-              extraPasswdLines = [ "kest:x:1000:1000:kest:/home/kest:/bin/bash" ];
-              extraGroupLines = [ "kest:x:1000:" ];
-            })
-            dockerTools.usrBinEnv
-            dockerTools.binSh
-          ];
-          extraCommands = ''
-            mkdir -p tmp work home/kest
-            chmod 1777 tmp
-            # HOME is env-set rather than uid-derived so the image works
-            # under any --user override (rootless docker maps the host
-            # user to root; k8s may assign arbitrary uids). Keep the home
-            # writable by all of them.
-            chmod 0777 home/kest
-            # /work is bind-mounted from the host, so its files usually
-            # aren't owned by the container user — git refuses such repos
-            # ("dubious ownership"), which would break kest's worktree
-            # guards and tag resolution.
-            printf '[safe]\n\tdirectory = /work\n' > home/kest/.gitconfig
-          '';
-          fakeRootCommands = ''
-            chown -R 1000:1000 ./home/kest ./work
-          '';
-          config = {
-            Cmd = [ "kest" ];
-            User = "1000:1000";
-            WorkingDir = "/work";
-            Env = [
-              "PATH=/usr/bin:/bin"
-              "HOME=/home/kest"
-              "USER=kest"
-              "LOGNAME=kest"
-              "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-              "KEST_TERRAFORM_VERSION_MANAGER=off"
-            ];
-            # Mirrors `hanko version docker labels`, baked in at nix build
-            # time since the image isn't built by `docker build`.
-            Labels = {
-              "org.opencontainers.image.title" = "kest";
-              "org.opencontainers.image.description" =
-                "kest + kestci with helm, terraform, opentofu, kubectl, awscli, and git bundled";
-              "org.opencontainers.image.version" = version;
-              "org.opencontainers.image.revision" = self.rev or self.dirtyRev or "unknown";
-              "org.opencontainers.image.source" = "https://github.com/deepak-science/kestrel";
-            };
-          };
-        };
       kestOverlay = final: _prev: {
         kest = final.buildGoApplication {
           pname = "kest";
@@ -208,7 +124,6 @@
           kestci = pkgs.kestci;
         }
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          docker = dockerImageFor pkgs;
           kest-darwin-arm64 = darwinArm64 "kest" pkgs.kest;
           kestci-darwin-arm64 = darwinArm64 "kestci" pkgs.kestci;
         }

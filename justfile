@@ -6,35 +6,6 @@ default:
 build:
     nix build .#default .#kestci
 
-# build the docker image (linux only) as a docker-archive at ./result-docker
-docker-build:
-    nix build .#docker -o result-docker
-
-# load the built docker image into docker
-docker-load:
-    docker load < result-docker
-
-# build and load in one step
-docker: docker-build docker-load
-
-# shell into the most recently built image
-docker-exec:
-    docker run -it --rm "$(docker load -q < result-docker | sed -n 's/^Loaded image: //p')" bash
-
-# explore the image layers with dive
-docker-dive:
-    nix run nixpkgs#dive -- "$(docker load -q < result-docker | sed -n 's/^Loaded image: //p')"
-
-# run kest from the most recently built image with the dkest mounts (see docs/docker.md)
-dkest *args:
-    docker run --rm -it \
-      -v "{{ invocation_directory() }}:/work" \
-      -v "$HOME/.config/kest:/home/kest/.config/kest" \
-      -v "$HOME/.aws:/home/kest/.aws" \
-      -v "$HOME/.kube:/home/kest/.kube" \
-      -v "$HOME/.local/state/kest:/home/kest/.local/state/kest" \
-      "$(docker load -q < result-docker | sed -n 's/^Loaded image: //p')" kest {{ args }}
-
 # run go tests via nix develop
 test:
     nix flake check
