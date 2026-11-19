@@ -167,6 +167,7 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 			}
 			if len(picked) > 0 {
 				proposed.Targets = picked
+				bindSoleTarget(proposed.Deploys, picked)
 			}
 		} else {
 			fmt.Println("\nDetected deploys but no kube contexts are configured.")
@@ -193,6 +194,9 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 		fmt.Print(string(out))
 		fmt.Println(strings.Repeat("─", 40))
 		fmt.Printf("Path: %s\n", configPath)
+		if n := countUnboundDeploys(proposed.Deploys); n > 0 {
+			fmt.Printf("Note: %d deploy(s) have no target, and kest deploy refuses those. Choose edit to set one.\n", n)
+		}
 
 		cm := confirmModel{}
 		result, err := runTUI(cm)
@@ -433,6 +437,10 @@ func detectChartDeploys(projectRoot string, targetNames []string) map[string]con
 
 		return deploys
 	}
+	// A chart with no per-target values files still deploys with its own defaults.
+	if chart != "" {
+		deploys[chartName(projectRoot, chart)] = config.Deploy{Chart: chart, Target: defaultTarget}
+	}
 	return deploys
 }
 
@@ -517,12 +525,7 @@ func commonPrefix(a, b []string) []string {
 }
 
 func deploysNeedTarget(deploys map[string]config.Deploy) bool {
-	for _, d := range deploys {
-		if d.Target == "" {
-			return true
-		}
-	}
-	return false
+	return countUnboundDeploys(deploys) > 0
 }
 
 func promptDeployTargets() (map[string]config.TargetConfig, error) {
@@ -663,4 +666,42 @@ func mergeSetupResult(existing, proposed *config.Config, force bool) *config.Con
 	}
 
 	return &result
+}
+
+// chartName returns the name: from the chart's Chart.yaml, falling back to its directory name.
+func chartName(projectRoot, chart string) string {
+	var meta struct {
+		Name string `yaml:"name"`
+	}
+	if data, err := os.ReadFile(filepath.Join(projectRoot, chart, "Chart.yaml")); err == nil {
+		if yaml.Unmarshal(data, &meta) == nil && meta.Name != "" {
+			return meta.Name
+		}
+	}
+	return filepath.Base(chart)
+}
+
+// bindSoleTarget points target-less deploys at the only target.
+// With several targets the choice is the user's, so they stay unbound.
+func bindSoleTarget(deploys map[string]config.Deploy, targets map[string]config.TargetConfig) {
+	if len(targets) != 1 {
+		return
+	}
+	target := mapKeys(targets)[0]
+	for name, d := range deploys {
+		if d.Target == "" {
+			d.Target = target
+			deploys[name] = d
+		}
+	}
+}
+
+func countUnboundDeploys(deploys map[string]config.Deploy) int {
+	n := 0
+	for _, d := range deploys {
+		if d.Target == "" {
+			n++
+		}
+	}
+	return n
 }

@@ -151,3 +151,56 @@ func TestStripOrderPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectChartDeploys_ChartOnly(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "charts", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "charts", "app", "Chart.yaml"), []byte("name: homepage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "charts", "app", "values.yaml"))
+
+	deploys := detectChartDeploys(root, []string{"homelab"})
+
+	d, ok := deploys["homepage"]
+	if !ok || len(deploys) != 1 {
+		t.Fatalf("expected one deploy named after the chart, got %v", keys(deploys))
+	}
+	if d.Chart != "charts/app" || d.Target != "homelab" || len(d.Values) != 0 {
+		t.Errorf("deploy = %+v, want chart charts/app, target homelab, no values", d)
+	}
+}
+
+func TestChartName_FallsBackToDir(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "charts", "app", "Chart.yaml"))
+	if got := chartName(root, "charts/app"); got != "app" {
+		t.Errorf("chartName = %q, want app", got)
+	}
+}
+
+func TestBindSoleTarget(t *testing.T) {
+	mk := func() map[string]config.Deploy {
+		return map[string]config.Deploy{
+			"gitea": {Manifests: "k8s/gitea"},
+			"web":   {Chart: "charts/app", Target: "other"},
+		}
+	}
+
+	one := mk()
+	bindSoleTarget(one, map[string]config.TargetConfig{"homelab": {Cluster: "my-cluster"}})
+	if one["gitea"].Target != "homelab" || one["web"].Target != "other" {
+		t.Errorf("sole target: got gitea=%q web=%q", one["gitea"].Target, one["web"].Target)
+	}
+
+	several := mk()
+	bindSoleTarget(several, map[string]config.TargetConfig{"a": {}, "b": {}})
+	if several["gitea"].Target != "" {
+		t.Errorf("several targets: gitea bound to %q, want unbound", several["gitea"].Target)
+	}
+	if countUnboundDeploys(several) != 1 {
+		t.Errorf("countUnboundDeploys = %d, want 1", countUnboundDeploys(several))
+	}
+}
