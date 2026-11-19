@@ -138,6 +138,10 @@ You can generate the accounts/contexts automatically with `kest config autoconfi
 
 Goes in your project root (committed to git). Kest walks up from your current directory to find it, so it works from anywhere in your project tree.
 
+`kest config init` scaffolds it: it finds the terraform roots, charts and manifest directories in the repo, proposes `iac_dir`, `command`, `targets` and `deploys`, and writes nothing until you confirm the preview. Run it again later to merge in newly added roots or apps.
+
+The two setup commands split by file: `kest config init` writes this project's `.kestconfig`, and `kest config autoconfigure` writes the global config for your machine.
+
 ```yaml
 # --- Helm (shared deploy settings) ---
 helm:

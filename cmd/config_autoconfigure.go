@@ -20,7 +20,7 @@ import (
 
 var configAutoconfigureCmd = &cobra.Command{
 	Use:   "autoconfigure",
-	Short: "Auto-discover AWS profiles and kube contexts, map them to accounts and clusters",
+	Short: "Set up this machine: map AWS profiles and kube contexts, write the global config",
 	Long: `Reads AWS profiles from ~/.aws/config and kube contexts from
 ~/.kube/config, then maps them to kest accounts and clusters.
 
@@ -28,7 +28,9 @@ When a project .kestconfig defines targets (with cluster names), autoconfigure
 matches kube contexts to those clusters.
 
 When directories or targets reference AWS accounts, autoconfigure matches
-AWS profiles by sso_account_id.`,
+AWS profiles by sso_account_id.
+
+Writes only the global config. To scaffold a project's .kestconfig, see 'kest config init'.`,
 	RunE: runAutoconfigure,
 }
 
