@@ -14,12 +14,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var swoopSetupForce bool
+var configInitForce bool
 
-var swoopSetupCmd = &cobra.Command{
-	Use:   "setup",
-	Short: "Discover terraform roots and initialize project .kestconfig",
-	Long: `Walks the project and writes infrastructure facts to .kestconfig:
+const configInitLong = `Walks the project and writes infrastructure facts to .kestconfig:
 
   - terraform.iac_dir   the directory containing the terraform roots
   - terraform.command   tofu, when roots pin via .opentofu-version
@@ -27,16 +24,36 @@ var swoopSetupCmd = &cobra.Command{
   - targets             one per env, when the …/live/<env>/ convention is used
   - deploys             helm charts and manifest dirs found in the repo
 
-Use --force to overwrite existing mappings.`,
-	RunE: runSwoopSetup,
+An existing .kestconfig is merged into, not replaced; --force overwrites its mappings.
+Nothing is written until you confirm the preview.
+
+Machine-side access (AWS profiles, kube contexts) lives in the global config: see 'kest config autoconfigure'.`
+
+var configInitCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Set up this project: detect terraform roots and deploys, write .kestconfig",
+	Long:  configInitLong,
+	RunE:  runConfigInit,
+}
+
+var swoopSetupCmd = &cobra.Command{
+	Use:        "setup",
+	Short:      "Alias for 'kest config init'",
+	Long:       configInitLong,
+	Hidden:     true,
+	Deprecated: "use 'kest config init'",
+	RunE:       runConfigInit,
 }
 
 func init() {
-	swoopSetupCmd.Flags().BoolVar(&swoopSetupForce, "force", false, "overwrite existing mappings in .kestconfig")
+	for _, c := range []*cobra.Command{configInitCmd, swoopSetupCmd} {
+		c.Flags().BoolVar(&configInitForce, "force", false, "overwrite existing mappings in .kestconfig")
+	}
+	configCmd.AddCommand(configInitCmd)
 	swoopCmd.AddCommand(swoopSetupCmd)
 }
 
-func runSwoopSetup(cmd *cobra.Command, args []string) error {
+func runConfigInit(cmd *cobra.Command, args []string) error {
 	// Step 1: Discover roots from project root (not iac_dir).
 	projectRoot, err := resolveProjectRoot()
 	if err != nil {
@@ -47,10 +64,6 @@ func runSwoopSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("discovering roots: %w", err)
 	}
-	if len(roots) == 0 {
-		return fmt.Errorf("no terraform roots found under %s", projectRoot)
-	}
-
 	// Step 2: find iac_dir. layout.IACDir is set only for the …/live/<env>/
 	// convention, where downstream joins iac_dir/live/<target>; otherwise it's
 	// the roots' common ancestor.
@@ -61,9 +74,11 @@ func runSwoopSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Found %d terraform root(s)\n", len(roots))
-	if iacDir != "" {
+	switch {
+	case len(roots) == 0:
+	case iacDir != "":
 		fmt.Printf("terraform.iac_dir: %s\n", iacDir)
-	} else {
+	default:
 		fmt.Println("terraform.iac_dir: (repo root)")
 	}
 	if layout.Type == "service" {
@@ -135,6 +150,9 @@ func runSwoopSetup(cmd *cobra.Command, args []string) error {
 	if deploys := detectDeploys(projectRoot, targetHint); len(deploys) > 0 {
 		proposed.Deploys = deploys
 	}
+	if len(roots) == 0 && len(proposed.Deploys) == 0 {
+		return fmt.Errorf("nothing to set up: no terraform roots, charts or manifest dirs found under %s", projectRoot)
+	}
 
 	if usesOpenTofu(roots) {
 		proposed.Terraform.Command = "tofu"
@@ -149,6 +167,7 @@ func runSwoopSetup(cmd *cobra.Command, args []string) error {
 			}
 			if len(picked) > 0 {
 				proposed.Targets = picked
+				bindSoleTarget(proposed.Deploys, picked)
 			}
 		} else {
 			fmt.Println("\nDetected deploys but no kube contexts are configured.")
@@ -164,7 +183,7 @@ func runSwoopSetup(cmd *cobra.Command, args []string) error {
 
 	// Merge with existing project config if present.
 	if existing != nil {
-		proposed = mergeSetupResult(existing, proposed, swoopSetupForce)
+		proposed = mergeSetupResult(existing, proposed, configInitForce)
 	}
 
 	// Step 5: Preview and confirm.
@@ -175,6 +194,9 @@ func runSwoopSetup(cmd *cobra.Command, args []string) error {
 		fmt.Print(string(out))
 		fmt.Println(strings.Repeat("─", 40))
 		fmt.Printf("Path: %s\n", configPath)
+		if n := countUnboundDeploys(proposed.Deploys); n > 0 {
+			fmt.Printf("Note: %d deploy(s) have no target, and kest deploy refuses those. Choose edit to set one.\n", n)
+		}
 
 		cm := confirmModel{}
 		result, err := runTUI(cm)
@@ -415,6 +437,10 @@ func detectChartDeploys(projectRoot string, targetNames []string) map[string]con
 
 		return deploys
 	}
+	// A chart with no per-target values files still deploys with its own defaults.
+	if chart != "" {
+		deploys[chartName(projectRoot, chart)] = config.Deploy{Chart: chart, Target: defaultTarget}
+	}
 	return deploys
 }
 
@@ -499,12 +525,7 @@ func commonPrefix(a, b []string) []string {
 }
 
 func deploysNeedTarget(deploys map[string]config.Deploy) bool {
-	for _, d := range deploys {
-		if d.Target == "" {
-			return true
-		}
-	}
-	return false
+	return countUnboundDeploys(deploys) > 0
 }
 
 func promptDeployTargets() (map[string]config.TargetConfig, error) {
@@ -645,4 +666,42 @@ func mergeSetupResult(existing, proposed *config.Config, force bool) *config.Con
 	}
 
 	return &result
+}
+
+// chartName returns the name: from the chart's Chart.yaml, falling back to its directory name.
+func chartName(projectRoot, chart string) string {
+	var meta struct {
+		Name string `yaml:"name"`
+	}
+	if data, err := os.ReadFile(filepath.Join(projectRoot, chart, "Chart.yaml")); err == nil {
+		if yaml.Unmarshal(data, &meta) == nil && meta.Name != "" {
+			return meta.Name
+		}
+	}
+	return filepath.Base(chart)
+}
+
+// bindSoleTarget points target-less deploys at the only target.
+// With several targets the choice is the user's, so they stay unbound.
+func bindSoleTarget(deploys map[string]config.Deploy, targets map[string]config.TargetConfig) {
+	if len(targets) != 1 {
+		return
+	}
+	target := mapKeys(targets)[0]
+	for name, d := range deploys {
+		if d.Target == "" {
+			d.Target = target
+			deploys[name] = d
+		}
+	}
+}
+
+func countUnboundDeploys(deploys map[string]config.Deploy) int {
+	n := 0
+	for _, d := range deploys {
+		if d.Target == "" {
+			n++
+		}
+	}
+	return n
 }

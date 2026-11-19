@@ -94,25 +94,11 @@ Options, cheapest first:
 
 ## Project-config bootstrap (`kest config init`)
 
-`kest config autoconfigure` (`cmd/config_autoconfigure.go`) only ever writes `config.GlobalConfigPath()` — it discovers AWS profiles and kube contexts and records them globally. It *reads* an existing `.kestconfig` to match contexts to targets, but never scaffolds one. So every project's `.kestconfig` (command, iac_dir, targets, releases) is hand-authored today, which is the main reason per-project config goes unused.
+**DONE.** `kest config init` scaffolds `.kestconfig`: `terraform.iac_dir` and `command`, `directories`, `targets` for the `…/live/<env>/` layout, and `deploys` from chart, values and manifest directories. It merges into an existing file, previews, and writes only on confirm. A repo with no terraform roots works as long as it has charts or manifests. `kest swoop setup` is a hidden, deprecated alias.
 
-Almost all of a terraform-side `.kestconfig` is mechanically derivable:
-
-```yaml
-terraform:
-  command: tofu       # detect: .opentofu-version / tofu in provider lock / which binary
-  iac_dir: iac-live   # the dir under which swoop.Discover finds the most backend-bearing roots
-```
-
-Proposed shape: a `kest config init` (or `autoconfigure --project`) that:
-- Detects `tofu` vs `terraform` and writes `command`.
-- Runs `swoop.Discover` from the repo root, finds where backend-bearing roots cluster, and proposes `iac_dir`.
-- Optionally scaffolds `targets:` stubs from discovered kube contexts (commented, since binding cluster+account+region needs a human).
-- Writes to `./.kestconfig`, never the global file; previews + editor-confirm like autoconfigure already does.
-
-Notes:
-- Helm releases stay manual — they encode intent (which release → which target) that can't be inferred.
-- This is the capability behind the autoconfigure hint text; the hint narrates the manual flow, this replaces it.
+Open:
+- **Tofu detection is narrow.** Only `.opentofu-version` sets `command: tofu`. A repo that uses tofu without a pin file gets nothing; the provider lock file (`registry.opentofu.org`) is the next signal to read.
+- **Target stubs outside the `live/<env>` layout.** A centralized repo gets `directories:` but no `targets:`; binding cluster, account and region still needs a human.
 
 ## Shared resolve/execute spine for local and CI (parity)
 

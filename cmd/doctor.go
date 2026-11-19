@@ -407,7 +407,7 @@ func checkDoctorProject() checkSection {
 	if cfg == nil || cfg.Sources.Project == "" {
 		return checkSection{
 			name:   "Project",
-			checks: []checkResult{{status: statusSkip, label: "No .kestconfig found"}},
+			checks: []checkResult{{status: statusSkip, label: "No .kestconfig found", detail: "— run 'kest config init' to scaffold one"}},
 		}
 	}
 
