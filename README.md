@@ -90,6 +90,17 @@ aws:
   # Skipped in CI. Without a TTY, kest exits with the login command to run instead.
   auto_sso_login: false
 
+# --- Apply guards (kest only; kestci always enforces its guards) ---
+# Global config only: kest refuses to load a .kestconfig that sets guards.
+# --force still skips all of them; `kest doctor` warns while any is off.
+guards:
+  # Refuse kest deploy / kest swoop apply outside CI.
+  require_ci: true
+  # Refuse applies from a dirty git worktree.
+  require_clean_worktree: true
+  # Refuse kest deploy to the prod target unless on main/master.
+  require_main_for_prod: true
+
 # --- Kubernetes ---
 kubernetes:
   # Map short cluster names to full kube context strings (typically EKS ARNs).

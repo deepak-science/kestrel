@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -765,5 +766,60 @@ drift:
 	}
 	if len(d.ExcludeDeploys) != 1 || d.ExcludeDeploys[0].Name != "grafana" {
 		t.Errorf("exclude_deploys = %+v", d.ExcludeDeploys)
+	}
+}
+
+func TestGuards_DefaultsOn(t *testing.T) {
+	var g GuardsConfig
+	if !g.CI() || !g.CleanWorktree() || !g.MainForProd() {
+		t.Errorf("zero GuardsConfig should enable every guard: %+v", g)
+	}
+	if off := g.Disabled(); len(off) != 0 {
+		t.Errorf("Disabled() = %v, want none", off)
+	}
+}
+
+func TestGuards_FromGlobal(t *testing.T) {
+	dir := t.TempDir()
+	global := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(global, []byte(`
+guards:
+  require_ci: false
+  require_clean_worktree: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	SetGlobalConfigPath(global)
+	t.Cleanup(func() { SetGlobalConfigPath("") })
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := cfg.Guards
+	if g.CI() || !g.CleanWorktree() || !g.MainForProd() {
+		t.Errorf("guards = ci:%v clean:%v main:%v, want false/true/true", g.CI(), g.CleanWorktree(), g.MainForProd())
+	}
+	if off := g.Disabled(); len(off) != 1 || off[0] != "require_ci" {
+		t.Errorf("Disabled() = %v, want [require_ci]", off)
+	}
+}
+
+func TestGuards_ProjectConfigRejected(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configFileName), []byte(`
+guards:
+  require_ci: false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	SetGlobalConfigPath(filepath.Join(dir, "missing.yaml"))
+	t.Cleanup(func() { SetGlobalConfigPath("") })
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "guards can only be set in the global config") {
+		t.Fatalf("Load() error = %v, want guards rejection", err)
 	}
 }

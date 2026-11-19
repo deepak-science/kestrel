@@ -64,21 +64,7 @@ Guardrail: the fleet layer reads and reports by default. Any fleet-wide apply st
 
 ## Per-guard config flags (replace blanket `--force`)
 
-Today `--force` (`cmd/root.go`) bypasses all three guards in `internal/guard/guard.go` at once: `CheckCI`, `CheckCleanWorktree`, `CheckBranch`. That's coarse — quick local applies from a laptop only really need the CI guard off, not the dirty-worktree or branch ones.
-
-Proposed shape (global config only, never project config — must not be committable):
-
-```yaml
-guards:
-  require_ci: false              # default true
-  require_clean_worktree: true   # default true
-  require_main_for_prod: true    # default true
-```
-
-Notes:
-- Each guard consults config before erroring; `--force` stays as a master override on the CLI.
-- `kest doctor` should surface a loud warning whenever any of these are disabled, so a misconfigured machine is visible.
-- Project-level `.kestconfig` must not be allowed to flip these — otherwise a repo could ship "no CI required" to everyone.
+**DONE.** `guards.require_ci` / `require_clean_worktree` / `require_main_for_prod` in the global config turn single guards off for `kest deploy` and `kest swoop apply`; each defaults to on and `--force` still skips all three. A `.kestconfig` that sets `guards:` fails to load, so a repo can't ship disabled guards. `kest doctor` warns while any guard is off. kestci ignores the setting and always enforces its guards.
 
 ## Deprecate the runnable container image
 

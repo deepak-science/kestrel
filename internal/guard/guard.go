@@ -22,7 +22,34 @@ func CheckCI() error {
 	if IsCI() {
 		return nil
 	}
-	return fmt.Errorf("not in CI environment, no deploys! Use --force to override")
+	return fmt.Errorf("not in CI environment, no deploys! Use --force, or set guards.require_ci: false in the global config")
+}
+
+// Policy selects which apply guards run.
+type Policy struct {
+	CI            bool
+	CleanWorktree bool
+	MainForProd   bool
+}
+
+// Check runs the enabled guards. An empty targetEnv skips the branch guard.
+func (p Policy) Check(targetEnv string) error {
+	if p.CI {
+		if err := CheckCI(); err != nil {
+			return err
+		}
+	}
+	if p.CleanWorktree {
+		if err := CheckCleanWorktree(); err != nil {
+			return err
+		}
+	}
+	if p.MainForProd {
+		if err := CheckBranch(targetEnv); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CheckCleanWorktree returns an error if the git working tree is dirty.

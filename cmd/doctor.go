@@ -43,6 +43,9 @@ settings are in order.`,
 			logCleanup = cleanup
 		}
 
+		if globalConfigPath != "" {
+			config.SetGlobalConfigPath(globalConfigPath)
+		}
 		cfg, err = config.Load()
 		if err != nil {
 			doctorConfigErr = err
@@ -272,6 +275,14 @@ func checkDoctorConfig() checkSection {
 				status: statusWarn,
 				label:  "No AWS accounts configured",
 				detail: "— run kest config autoconfigure",
+			})
+		}
+
+		if off := cfg.Guards.Disabled(); len(off) > 0 {
+			checks = append(checks, checkResult{
+				status: statusWarn,
+				label:  "Guards disabled: " + strings.Join(off, ", "),
+				detail: "— local applies skip them; set under guards: in " + globalPath,
 			})
 		}
 

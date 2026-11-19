@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/deepak-science/kestrel/internal/config"
 	"github.com/deepak-science/kestrel/internal/guard"
 	"github.com/deepak-science/kestrel/internal/swoop"
 	"github.com/spf13/cobra"
@@ -80,8 +81,9 @@ if the planfile is missing, or if HEAD, the root's config, or the AWS
 profile changed since the plan.
 
 Apply has additional safety guards:
-- Requires --force when not in CI
-- Checks for a clean git worktree`,
+- Requires CI
+- Checks for a clean git worktree
+Each can be turned off under guards: in the global config; --force skips both.`,
 	Args: targetArgs,
 	RunE: swoopActionRunE("apply"),
 }
@@ -134,7 +136,7 @@ func runSwoopActionCmd(action, target string, extra []string) error {
 	}
 
 	if action == "apply" {
-		if err := applyGuards(); err != nil {
+		if err := applyGuards(""); err != nil {
 			return err
 		}
 	}
@@ -241,17 +243,21 @@ func handleTFVersionCheck(binary, manager string, root swoop.Root) error {
 	return nil
 }
 
-func applyGuards() error {
+// applyGuards runs the guards the global config leaves on; --force skips them all.
+// An empty targetEnv skips the branch guard.
+func applyGuards(targetEnv string) error {
 	if force {
 		return nil
 	}
-	if err := guard.CheckCI(); err != nil {
-		return err
+	var g config.GuardsConfig
+	if cfg != nil {
+		g = cfg.Guards
 	}
-	if err := guard.CheckCleanWorktree(); err != nil {
-		return err
-	}
-	return nil
+	return guard.Policy{
+		CI:            g.CI(),
+		CleanWorktree: g.CleanWorktree(),
+		MainForProd:   g.MainForProd(),
+	}.Check(targetEnv)
 }
 
 // confirmFuzzyMatch prints the resolved root(s) and prompts the user for
