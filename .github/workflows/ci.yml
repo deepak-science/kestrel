@@ -60,18 +60,6 @@ jobs:
         run: |
           nix build --print-build-logs .#${{ matrix.kestci }} -o result-kestci
           cp ./result-kestci/bin/kestci kestci-${{ matrix.target }}
-      - name: Build docker image
-        if: startsWith(matrix.target, 'linux-') && startsWith(github.ref, 'refs/tags/v')
-        run: nix build --print-build-logs .#docker -o result-docker
-      - name: Stage docker archive for upload
-        if: startsWith(matrix.target, 'linux-') && startsWith(github.ref, 'refs/tags/v')
-        run: cp -L result-docker kest-docker-${{ matrix.target }}.tar.gz
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: startsWith(matrix.target, 'linux-') && startsWith(github.ref, 'refs/tags/v')
-        with:
-          name: kest-docker-${{ matrix.target }}
-          path: kest-docker-${{ matrix.target }}.tar.gz
-          retention-days: 7
       - name: Compute checksums
         run: shasum -a 256 kest-${{ matrix.target }} kestci-${{ matrix.target }} > checksums-${{ matrix.target }}.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -149,34 +137,3 @@ jobs:
           git config user.email "${user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
           git add Formula/kest.rb
           git diff --cached --quiet || { git commit -qm "kest ${TAG#v}" && git push -q; }
-  publish-image:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0 # hanko computes the version from tag history
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size: 5G
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: kest-docker-*
-          merge-multiple: true
-      - name: Publish image to ghcr
-        env:
-          IMAGE: ghcr.io/${{ github.repository }}
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          nix develop --command bash scripts/deploy-image.sh \
-            kest-docker-linux-amd64.tar.gz kest-docker-linux-arm64.tar.gz

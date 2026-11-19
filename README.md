@@ -32,28 +32,9 @@ brew install deepak-science/tap/kest
 
 Installs `kest` and `kestci` with shell completions. The release workflow updates the formula.
 
-### Docker
+### Container image (removed)
 
-Every release also publishes a container image to ghcr with `kest`, `kestci`, and the tools they shell out to (terraform, opentofu, helm, kubectl, aws, git) bundled:
-
-```sh
-docker run --rm ghcr.io/deepak-science/kestrel:latest kest --version
-```
-
-Tags follow the release version (`0.2.0`, `0.2`, `0`, `latest`), multi-arch for linux amd64/arm64. Mount your project and AWS config to do real work:
-
-```sh
-docker run --rm -it \
-  -v "$PWD:/work" \
-  -v "$HOME/.aws:/home/kest/.aws" \
-  ghcr.io/deepak-science/kestrel kest doctor
-```
-
-See [docs/docker.md](docs/docker.md) for full running instructions — which config paths to mount where, AWS SSO from a container, and using `kestci` as a CI job image.
-
-The image pins its own terraform and opentofu (repos with `terraform.command: tofu` just work), so kest's version-manager integration is disabled inside it (`KEST_TERRAFORM_VERSION_MANAGER=off`).
-
-Build it locally on linux with `just docker` (`nix build .#docker` + `docker load`).
+The `ghcr.io/deepak-science/kestrel` image is no longer built or published. `0.7.0` was the last release with one; its tags stay pullable but `latest` no longer moves. Install the binaries instead, and in CI fetch `kestci` with the install script (see [docs/examples/ci](docs/examples/ci)).
 
 ### Building from source
 
