@@ -305,12 +305,7 @@ func runAutoconfigure(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// Assemble config for writing, preserving all sections.
-	toWrite := &config.Config{
-		AWS:        global.AWS,
-		Kubernetes: global.Kubernetes,
-		Terraform:  global.Terraform,
-		Swoop:      global.Swoop,
-	}
+	toWrite := globalSections(global)
 
 	for {
 		fmt.Println("\nProposed global config:")
@@ -817,4 +812,15 @@ func (m confirmModel) View() string {
 	b.WriteString(acHelpStyle.Render("enter: select · w/e/c: quick pick"))
 	b.WriteString("\n")
 	return b.String()
+}
+
+// globalSections copies the sections that belong in the global config, so a rewrite keeps the ones autoconfigure doesn't prompt for.
+func globalSections(global *config.Config) *config.Config {
+	return &config.Config{
+		AWS:        global.AWS,
+		Kubernetes: global.Kubernetes,
+		Terraform:  global.Terraform,
+		Swoop:      global.Swoop,
+		Guards:     global.Guards,
+	}
 }
