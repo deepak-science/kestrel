@@ -34,6 +34,8 @@ type Config struct {
 	// Drift configures the `drift` sweep (project config).
 	Drift DriftConfig `yaml:"drift,omitempty"`
 
+	Guards GuardsConfig `yaml:"guards,omitempty"`
+
 	// Raw layers preserved for source-aware commands (not serialised).
 	ProjectTargets map[string]TargetConfig `yaml:"-"`
 	Sources        Sources                 `yaml:"-"`
@@ -147,6 +149,44 @@ type AWSConfig struct {
 
 	// AutoSSOLogin enables automatic aws sso login when a session is expired.
 	AutoSSOLogin bool `yaml:"auto_sso_login,omitempty"`
+}
+
+// GuardsConfig turns individual kest apply guards off on this machine.
+// It is read from the global config only, so a repo can't ship disabled guards.
+type GuardsConfig struct {
+	RequireCI            *bool `yaml:"require_ci,omitempty"`
+	RequireCleanWorktree *bool `yaml:"require_clean_worktree,omitempty"`
+	RequireMainForProd   *bool `yaml:"require_main_for_prod,omitempty"`
+}
+
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+func (g GuardsConfig) CI() bool            { return boolOr(g.RequireCI, true) }
+func (g GuardsConfig) CleanWorktree() bool { return boolOr(g.RequireCleanWorktree, true) }
+func (g GuardsConfig) MainForProd() bool   { return boolOr(g.RequireMainForProd, true) }
+
+// Disabled lists the yaml names of guards turned off.
+func (g GuardsConfig) Disabled() []string {
+	var off []string
+	if !g.CI() {
+		off = append(off, "require_ci")
+	}
+	if !g.CleanWorktree() {
+		off = append(off, "require_clean_worktree")
+	}
+	if !g.MainForProd() {
+		off = append(off, "require_main_for_prod")
+	}
+	return off
+}
+
+func (g GuardsConfig) isSet() bool {
+	return g.RequireCI != nil || g.RequireCleanWorktree != nil || g.RequireMainForProd != nil
 }
 
 // AWSAccountConfig maps an AWS account ID to access credentials.
@@ -311,6 +351,9 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading project config: %w", err)
 	}
+	if project.Guards.isSet() {
+		return nil, fmt.Errorf("loading project config: %s: guards can only be set in the global config (%s)", projectPath, globalPath)
+	}
 
 	out := compose(user, project)
 
@@ -414,7 +457,7 @@ func compose(user, project *Config) *Config {
 	// Drift exclusions describe the project's roots and deploys, so they come from project config only.
 	out.Drift = project.Drift
 
-	// AWS and Kubernetes come from user config (already in out via *user).
+	// AWS, Kubernetes and Guards come from user config (already in out via *user).
 
 	return &out
 }

@@ -159,6 +159,15 @@ Applies go through the standard guard stack: CI-only, clean worktree, and
 prod-only-from-main. `--force` bypasses all three for local applies. `--diff`
 is exempt (read-only).
 
+To turn one off on your machine without `--force`, set it in the global config (a `.kestconfig` can't):
+
+```yaml
+guards:
+  require_ci: false   # local applies from a laptop; worktree and branch guards stay on
+```
+
+`kest doctor` warns while any guard is off.
+
 ## In CI (`kestci deploy`)
 
 `kestci deploy <app>` is the non-interactive sibling: identical resolution, but

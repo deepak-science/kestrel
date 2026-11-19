@@ -9,7 +9,6 @@ import (
 
 	"github.com/deepak-science/kestrel/internal/config"
 	"github.com/deepak-science/kestrel/internal/deploy"
-	"github.com/deepak-science/kestrel/internal/guard"
 	"github.com/deepak-science/kestrel/internal/runner"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -73,15 +72,9 @@ func deploySingleApp(name string, extra []string) error {
 		action = deploy.ActionDiff
 	}
 
-	// Guards apply to mutating applies only; --diff is read-only. --force bypasses.
-	if action == deploy.ActionApply && !force {
-		if err := guard.CheckCI(); err != nil {
-			return err
-		}
-		if err := guard.CheckCleanWorktree(); err != nil {
-			return err
-		}
-		if err := guard.CheckBranch(d.Target); err != nil {
+	// Guards apply to mutating applies only; --diff is read-only.
+	if action == deploy.ActionApply {
+		if err := applyGuards(d.Target); err != nil {
 			return err
 		}
 	}
