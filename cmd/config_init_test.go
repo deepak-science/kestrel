@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/deepak-science/kestrel/internal/config"
@@ -121,18 +122,52 @@ func TestCommonRootDir(t *testing.T) {
 	}
 }
 
-func TestUsesOpenTofu(t *testing.T) {
-	root := t.TempDir()
-	tofuRoot := filepath.Join(root, "cluster")
-	plainRoot := filepath.Join(root, "edge")
-	writeFile(t, filepath.Join(tofuRoot, ".opentofu-version"))
-	writeFile(t, filepath.Join(plainRoot, ".terraform-version"))
+func TestDetectOpenTofu(t *testing.T) {
+	const tofuLock = "provider \"registry.opentofu.org/hashicorp/aws\" {\n  version = \"5.0.0\"\n}\n"
+	const tfLock = "provider \"registry.terraform.io/hashicorp/aws\" {\n  version = \"5.0.0\"\n}\n"
 
-	if !usesOpenTofu([]swoop.Root{{AbsPath: tofuRoot}, {AbsPath: plainRoot}}) {
-		t.Error("expected tofu detection when a root has .opentofu-version")
+	cases := []struct {
+		name  string
+		files map[string]string
+		roots []string
+		want  string
+	}{
+		{"pin in root", map[string]string{"iac/cluster/.opentofu-version": "1.8.0\n"}, []string{"iac/edge", "iac/cluster"}, "iac/cluster/.opentofu-version"},
+		{"pin in ancestor", map[string]string{"iac/.opentofu-version": "1.8.0\n"}, []string{"iac/cluster"}, "iac/.opentofu-version"},
+		{"pin at project root", map[string]string{".opentofu-version": "1.8.0\n"}, []string{"iac/cluster"}, ".opentofu-version"},
+		{"root at project root", map[string]string{".opentofu-version": "1.8.0\n"}, []string{"."}, ".opentofu-version"},
+		{"opentofu lock", map[string]string{"iac/cluster/.terraform.lock.hcl": tofuLock}, []string{"iac/cluster"}, "iac/cluster/.terraform.lock.hcl uses registry.opentofu.org"},
+		{"tofu source file", map[string]string{"iac/cluster/override.tofu": ""}, []string{"iac/cluster"}, "iac/cluster/override.tofu"},
+		{"terraform pin and lock", map[string]string{"iac/cluster/.terraform-version": "1.9.2\n", "iac/cluster/.terraform.lock.hcl": tfLock}, []string{"iac/cluster"}, ""},
+		{"pin outside the roots' ancestry", map[string]string{"other/.opentofu-version": "1.8.0\n"}, []string{"iac/cluster"}, ""},
+		{"no roots", map[string]string{".opentofu-version": "1.8.0\n"}, nil, ""},
 	}
-	if usesOpenTofu([]swoop.Root{{AbsPath: plainRoot}}) {
-		t.Error("did not expect tofu detection for .terraform-version only")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project := t.TempDir()
+			for rel, content := range tc.files {
+				path := filepath.Join(project, rel)
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var roots []swoop.Root
+			for _, rel := range tc.roots {
+				roots = append(roots, swoop.Root{Path: rel, AbsPath: filepath.Join(project, rel)})
+			}
+			want := tc.want
+			if before, after, ok := strings.Cut(want, " "); ok {
+				want = filepath.FromSlash(before) + " " + after
+			} else {
+				want = filepath.FromSlash(want)
+			}
+			if got := detectOpenTofu(roots, project); got != want {
+				t.Errorf("detectOpenTofu = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
