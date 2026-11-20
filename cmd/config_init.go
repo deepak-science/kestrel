@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,7 +20,7 @@ var configInitForce bool
 const configInitLong = `Walks the project and writes infrastructure facts to .kestconfig:
 
   - terraform.iac_dir   the directory containing the terraform roots
-  - terraform.command   tofu, when roots pin via .opentofu-version
+  - terraform.command   tofu, on an .opentofu-version pin, an OpenTofu provider lock or .tofu files
   - directories         dir → AWS account, for dirs that map to one account
   - targets             one per env, when the …/live/<env>/ convention is used
   - deploys             helm charts and manifest dirs found in the repo
@@ -154,9 +155,9 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("nothing to set up: no terraform roots, charts or manifest dirs found under %s", projectRoot)
 	}
 
-	if usesOpenTofu(roots) {
+	if signal := detectOpenTofu(roots, projectRoot); signal != "" {
 		proposed.Terraform.Command = "tofu"
-		fmt.Println("Detected: OpenTofu (.opentofu-version) → terraform.command: tofu")
+		fmt.Printf("Detected: OpenTofu (%s) → terraform.command: tofu\n", signal)
 	}
 
 	if cfg != nil && len(proposed.Targets) == 0 && deploysNeedTarget(proposed.Deploys) {
@@ -562,16 +563,33 @@ func promptDeployTargets() (map[string]config.TargetConfig, error) {
 	return targets, nil
 }
 
-// usesOpenTofu reports whether any discovered root pins its version with an
-// .opentofu-version file (OpenTofu's native convention), signalling that the
-// repo drives tofu rather than terraform.
-func usesOpenTofu(roots []swoop.Root) bool {
+// detectOpenTofu returns the first evidence that the repo drives tofu rather than terraform, as a project-relative description, or "" when there is none.
+// Signals, per root: an .opentofu-version pin in the root or an ancestor up to the project root (tofuenv resolves pins upward), a provider lock file naming registry.opentofu.org, or a .tofu source file.
+func detectOpenTofu(roots []swoop.Root, projectRoot string) string {
 	for _, r := range roots {
-		if _, err := os.Stat(filepath.Join(r.AbsPath, ".opentofu-version")); err == nil {
-			return true
+		for dir := filepath.Clean(r.Path); ; dir = filepath.Dir(dir) {
+			pin := filepath.Join(dir, ".opentofu-version")
+			if _, err := os.Stat(filepath.Join(projectRoot, pin)); err == nil {
+				return pin
+			}
+			if dir == "." {
+				break
+			}
+		}
+
+		lock := filepath.Join(r.Path, ".terraform.lock.hcl")
+		if data, err := os.ReadFile(filepath.Join(projectRoot, lock)); err == nil && bytes.Contains(data, []byte(`"registry.opentofu.org/`)) {
+			return lock + " uses registry.opentofu.org"
+		}
+
+		entries, _ := os.ReadDir(filepath.Join(projectRoot, r.Path))
+		for _, e := range entries {
+			if name := e.Name(); !e.IsDir() && (strings.HasSuffix(name, ".tofu") || strings.HasSuffix(name, ".tofu.json")) {
+				return filepath.Join(r.Path, name)
+			}
 		}
 	}
-	return false
+	return ""
 }
 
 func mapKeys[V any](m map[string]V) []string {

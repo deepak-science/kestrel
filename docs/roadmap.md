@@ -91,7 +91,7 @@ Options, cheapest first:
 **DONE.** `kest config init` scaffolds `.kestconfig`: `terraform.iac_dir` and `command`, `directories`, `targets` for the `…/live/<env>/` layout, and `deploys` from chart, values and manifest directories. It merges into an existing file, previews, and writes only on confirm. A repo with no terraform roots works as long as it has charts or manifests. `kest swoop setup` is a hidden, deprecated alias.
 
 Open:
-- **Tofu detection is narrow.** Only `.opentofu-version` sets `command: tofu`. A repo that uses tofu without a pin file gets nothing; the provider lock file (`registry.opentofu.org`) is the next signal to read.
+- **Tofu detection needs a file signal.** `command: tofu` is set from an `.opentofu-version` pin (in a root or above it), a `registry.opentofu.org` provider lock, or `.tofu` files. A repo with none of these committed still gets nothing.
 - **Target stubs outside the `live/<env>` layout.** A centralized repo gets `directories:` but no `targets:`; binding cluster, account and region still needs a human.
 
 ## Shared resolve/execute spine for local and CI (parity)
