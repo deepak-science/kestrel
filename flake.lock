@@ -88,11 +88,11 @@
         "treefmt-nix": "treefmt-nix"
       },
       "locked": {
-        "lastModified": 1794588989,
-        "narHash": "sha256-pOeDHc5U7Yijta7FumBs7h4VJkf2BpKJr9YtAYhwXgg=",
+        "lastModified": 1795190423,
+        "narHash": "sha256-q14WTUwvChgj5ffZGru76GQb4mjEKlzj6lJeuYzpuCA=",
         "owner": "deepak-science",
         "repo": "hanko",
-        "rev": "824f4424423ec61c59d3a3d26f47e1c778881412",
+        "rev": "78cca348aad2a61fc53e120c10b3fadea0688ba6",
         "type": "github"
       },
       "original": {
@@ -163,11 +163,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1780220602,
-        "narHash": "sha256-eynAfOmbmxJnkp7YewvCEbShNnnYJ9gLLqkzsYtBPeM=",
+        "lastModified": 1791885023,
+        "narHash": "sha256-C3alQ2MEt0zVrUSho5NUDo3jmhbff72++bfwoqT9Omo=",
         "owner": "numtide",
         "repo": "treefmt-nix",
-        "rev": "db947814a175b7ca6ded66e21383d938df01c227",
+        "rev": "0d6d739a833ba9a9c93034862e4a7b061a062a1c",
         "type": "github"
       },
       "original": {
