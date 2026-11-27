@@ -155,7 +155,7 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 	// The pre-apply view feeds both the change summary and the choice of workloads to wait on.
 	var base *baseline
 	if manifestApply && (d.UsesServerSide() || wait) {
-		before, snapErr := getObjects(d.Manifests, res, d.Namespace, true, opts)
+		before, snapErr := getObjects(d.Manifests, res, d.Namespace, opts)
 		if snapErr == nil {
 			base = &baseline{objects: before}
 		} else {
@@ -191,7 +191,7 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		fetch := func(ctx context.Context) ([]kubeObject, error) {
 			o := pollOpts
 			o.Context = ctx
-			return getObjects(d.Manifests, res, d.Namespace, false, o)
+			return getObjects(d.Manifests, res, d.Namespace, o)
 		}
 		return out, waitForRollouts(fetch, base, waitSpec{Timeout: pol.Wait, All: pol.WaitAll, Interval: waitPollInterval}, pol.out())
 	}

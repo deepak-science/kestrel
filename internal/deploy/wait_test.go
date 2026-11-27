@@ -287,3 +287,33 @@ func TestWaitForRollouts_RetryWaitsOnTimedOutDeployment(t *testing.T) {
 		t.Errorf("summary missing the reason:\n%s", out)
 	}
 }
+
+// A workload that was down before the apply but has recovered by the end is not reported as unavailable.
+func TestWaitForRollouts_RecoveredWorkloadNotWarned(t *testing.T) {
+	base := &baseline{objects: []kubeObject{
+		workload(t, "Deployment", "web", 1, twoReplicas, deployReady),
+		workload(t, "Deployment", "flaky", 1, twoReplicas, deployDegraded),
+	}}
+	out, err := testWait(t, base, false,
+		[]kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady), workload(t, "Deployment", "flaky", 1, twoReplicas, deployDegraded)},
+		[]kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, `{"observedGeneration":2,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`), workload(t, "Deployment", "flaky", 1, twoReplicas, deployReady)},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "NOT READY") || strings.Contains(out, "warning:") {
+		t.Errorf("recovered workload still reported as unavailable:\n%s", out)
+	}
+	if !strings.Contains(out, "unchanged apps/deployment/flaky  web:1.2  (not ready before apply, ready now)") {
+		t.Errorf("summary missing the recovered workload's note:\n%s", out)
+	}
+}
+
+// A waited workload that disappears mid-wait stays pending rather than counting as ready.
+func TestWaitForRollouts_MissingWorkloadIsPending(t *testing.T) {
+	base := &baseline{objects: []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}}
+	out, err := testWait(t, base, false, []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady)}, nil)
+	if err == nil || !strings.Contains(out, "FAILED    apps/deployment/web  web:1.2  (not found)") {
+		t.Fatalf("expected the missing workload to fail the wait, got %v\n%s", err, out)
+	}
+}

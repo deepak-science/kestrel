@@ -190,12 +190,9 @@ func getWorkloadsArgs(path string, res Resolution, namespace string) []string {
 	return args
 }
 
-// getObjects reads the manifests' live objects; ignoreMissing tolerates ones not created yet.
-func getObjects(path string, res Resolution, namespace string, ignoreMissing bool, opts runner.Options) ([]kubeObject, error) {
-	args := getWorkloadsArgs(path, res, namespace)
-	if ignoreMissing {
-		args = append(args, "--ignore-not-found")
-	}
+// getObjects reads the manifests' live objects, skipping any that don't exist: not created yet, or deleted since (e.g. a finished Job past its TTL).
+func getObjects(path string, res Resolution, namespace string, opts runner.Options) ([]kubeObject, error) {
+	args := append(getWorkloadsArgs(path, res, namespace), "--ignore-not-found")
 	opts.CaptureStdout = true
 	opts.Silent = true
 	got, err := runner.RunWithOpts("kubectl", args, opts)
@@ -322,22 +319,21 @@ func waitForRollouts(fetch func(context.Context) ([]kubeObject, error), base *ba
 	}
 
 	var pollErr error
-	for waiting > 0 {
+	for {
 		live := map[string]kubeObject{}
 		for _, o := range objs {
 			live[o.key()] = o
 		}
 		pending := 0
 		for _, w := range workloads {
-			o, ok := live[w.key]
-			if !w.wait || !ok {
-				continue
+			// Workloads that aren't waited on are tracked too, so the summary reports them as they are now.
+			state, detail := rolloutRolling, "not found"
+			if o, ok := live[w.key]; ok {
+				if state, detail, err = rolloutStatus(o); err != nil {
+					return err
+				}
 			}
-			state, detail, err := rolloutStatus(o)
-			if err != nil {
-				return err
-			}
-			if state != rolloutReady {
+			if w.wait && state != rolloutReady {
 				pending++
 				if detail != w.detail {
 					p("  waiting: %s: %s\n", w.name, detail)
@@ -371,10 +367,12 @@ func waitForRollouts(fetch func(context.Context) ([]kubeObject, error), base *ba
 		status := "unchanged"
 		var notes []string
 		switch {
-		case w.preexisting:
+		case w.preexisting && w.state != rolloutReady:
 			status = "NOT READY"
 			notes = append(notes, w.note+", not waited on")
 			preexisting = append(preexisting, w.name)
+		case w.preexisting:
+			notes = append(notes, w.note+", ready now")
 		case w.wait && w.state != rolloutReady:
 			status = "FAILED"
 			notes = append(notes, w.detail)
