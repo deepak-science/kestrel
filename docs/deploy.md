@@ -84,6 +84,7 @@ kest deploy homepage                 # helm upgrade --install homepage charts/ap
 kest deploy homepage --diff          # read-only preview: helm --dry-run / kubectl diff
 kest deploy gitea --confirm          # diff, ask, then apply in one run
 kest deploy gitea --wait=false       # apply without waiting for workload rollouts
+kest deploy gitea --wait-all         # wait on every workload, not just the ones the apply changed
 kest deploy gitea --force-conflicts  # take back fields edited live
 kest deploy gitea --snapshot         # snapshot the app's volumes first; abort if that fails
 kest snapshot gitea                  # just the snapshots
@@ -99,12 +100,22 @@ diff", not a failure). It's read-only and skips the guard stack.
 
 `--confirm` (kest only, not kestci) runs the diff, asks, and applies in the same run. Guards are checked before the diff, so you aren't asked about an apply they'd refuse. A manifest diff with no differences skips the apply; helm's dry-run can't tell, so it always asks. Snapshots and deploy scripts run only after you say yes. Without a terminal it refuses rather than guess. For helm this is "same invocation", not atomic: the release can still change between the dry-run and the upgrade.
 
-After a manifest apply, kest runs `kubectl rollout status` on every Deployment,
-StatefulSet and DaemonSet in the manifest dir, then prints a
-summary with each workload's images. Every workload is waited on even if one
-fails; any failure exits non-zero. `--wait-timeout` sets the per-workload
-timeout (default `5m`); `--wait=false` skips the wait. Helm deploys already wait via `--atomic`, so `--wait`
-is a no-op there. Works the same on `kestci deploy`.
+After a manifest apply, kest waits for the rollout of the Deployments, StatefulSets and DaemonSets the apply created or changed, then prints a summary with every workload's images. It compares each workload with a snapshot taken before the apply and sorts it into one of four cases:
+
+| Workload | Before the apply | What kest does |
+|---|---|---|
+| created, or spec changed (`metadata.generation` moved) | any | waits; fails the deploy if it isn't ready in time |
+| unchanged | ready | nothing (`unchanged` in the summary) |
+| unchanged | an earlier rollout never finished | waits; fails the deploy if it isn't ready in time |
+| unchanged | on the current spec, but pods unavailable | warns (`NOT READY` in the summary), exit code unaffected |
+
+The third row is what makes retrying a failed deploy fail again instead of passing because the re-apply was a no-op. The fourth keeps a workload that is broken for its own reasons from holding up, or failing, a deploy that didn't touch it.
+
+When every pod is already on the current spec but not all are available, a Deployment's `Progressing` condition tells the two apart: it only reaches `NewReplicaSetAvailable` once a rollout completes, so one that never did still counts as unfinished. A StatefulSet short of its replica count counts as unfinished too. StatefulSets and DaemonSets otherwise keep no such record, so one whose pods all exist on the current revision but never became available looks the same as one that is simply down, and retrying its failed deploy warns instead of failing.
+
+All waited workloads share one deadline, `--wait-timeout` (default `5m`), so the worst case is a single timeout. `--wait-all` waits on every workload in the manifest dir and fails on any that isn't ready, changed or not. `--wait=false` skips the wait. If the pre-apply snapshot fails, kest can't tell what changed and waits on everything.
+
+A change to only a ConfigMap or Secret moves no workload's generation, so there is nothing to wait on. Helm deploys already wait via `--atomic`, so `--wait` is a no-op there. Works the same on `kestci deploy`.
 
 ### Server-side apply (default for manifests)
 

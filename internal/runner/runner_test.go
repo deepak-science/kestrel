@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunWithOpts_CaptureStdout(t *testing.T) {
@@ -17,6 +19,21 @@ func TestRunWithOpts_CaptureStdout(t *testing.T) {
 	}
 	if res.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", res.ExitCode)
+	}
+}
+
+// A background child inherits the captured stdout pipe and outlives the killed shell.
+// Its stderr is detached so the orphan doesn't hold the test binary's own output open.
+func TestRunWithOpts_ContextBoundsPipeDrain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := RunWithOpts("sh", []string{"-c", "sleep 20 2>/dev/null & wait"}, Options{Context: ctx, CaptureStdout: true, Silent: true})
+	if err == nil {
+		t.Fatal("expected the cancelled command to return an error")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("cancelled command took %s to return", elapsed)
 	}
 }
 

@@ -16,6 +16,7 @@ var (
 	deployTargetFltr string
 	deployDiff       bool
 	deployWait       bool
+	deployWaitAll    bool
 	deployWaitTO     time.Duration
 	deployForceConf  bool
 	deploySnapshot   bool
@@ -90,6 +91,7 @@ func ciDeploySingleApp(name string, extra []string) error {
 		Ambient:        true,
 		PrintContext:   true,
 		Wait:           waitTimeout(),
+		WaitAll:        deployWaitAll,
 		ForceConflicts: deployForceConf,
 	}, extra)
 	return err
@@ -117,8 +119,9 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployAllApps, "all", false, "deploy all configured apps")
 	deployCmd.Flags().StringVar(&deployTargetFltr, "target", "", "filter apps by target (used with --all)")
 	deployCmd.Flags().BoolVar(&deployDiff, "diff", false, "preview changes (kubectl diff / helm --dry-run) without applying")
-	deployCmd.Flags().BoolVar(&deployWait, "wait", true, "after a manifest apply, wait for each Deployment/StatefulSet/DaemonSet rollout and print its images (--wait=false to skip)")
-	deployCmd.Flags().DurationVar(&deployWaitTO, "wait-timeout", 5*time.Minute, "per-workload rollout timeout for --wait")
+	deployCmd.Flags().BoolVar(&deployWait, "wait", true, "after a manifest apply, wait for the Deployments/StatefulSets/DaemonSets it changed to roll out and print each workload's images (--wait=false to skip)")
+	deployCmd.Flags().BoolVar(&deployWaitAll, "wait-all", false, "with --wait, wait on every workload in the manifests and fail on any that isn't ready, changed or not")
+	deployCmd.Flags().DurationVar(&deployWaitTO, "wait-timeout", 5*time.Minute, "overall rollout deadline for --wait")
 	deployCmd.Flags().BoolVar(&deployForceConf, "force-conflicts", false, "server_side deploys: take ownership of fields another field manager holds, reverting live edits to them")
 	deployCmd.Flags().BoolVar(&deploySnapshot, "snapshot", false, "before applying, snapshot every PVC in the app's namespace; abort if it fails")
 	deployCmd.Flags().DurationVar(&deploySnapTO, "snapshot-timeout", 10*time.Minute, "how long --snapshot waits for snapshots to become readyToUse")

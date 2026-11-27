@@ -1,59 +1,93 @@
 package deploy
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestParseWorkloads_List(t *testing.T) {
+func workload(t *testing.T, kind, name string, gen int64, spec, status string) kubeObject {
+	t.Helper()
+	data := fmt.Sprintf(`{"apiVersion":"apps/v1","kind":%q,"metadata":{"name":%q,"namespace":"apps","generation":%d},"spec":%s,"status":%s}`, kind, name, gen, spec, status)
+	objs, err := parseObjects([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return objs[0]
+}
+
+const (
+	deployReady    = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`
+	deployDegraded = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0,"conditions":[{"type":"Progressing","reason":"NewReplicaSetAvailable"}]}`
+	deployTimedOut = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0,"conditions":[{"type":"Available","reason":"MinimumReplicasUnavailable"},{"type":"Progressing","reason":"ProgressDeadlineExceeded"}]}`
+	deployStarting = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0,"conditions":[{"type":"Progressing","reason":"ReplicaSetUpdated"}]}`
+	deployRolling  = `{"observedGeneration":1,"replicas":3,"updatedReplicas":1,"availableReplicas":2}`
+	twoReplicas    = `{"replicas":2,"template":{"spec":{"containers":[{"image":"web:1.2"}]}}}`
+)
+
+func TestRolloutStatus(t *testing.T) {
+	for name, tc := range map[string]struct {
+		kind         string
+		gen          int64
+		spec, status string
+		want         rolloutState
+	}{
+		"deployment ready":              {"Deployment", 1, twoReplicas, deployReady, rolloutReady},
+		"deployment stale status":       {"Deployment", 2, twoReplicas, deployReady, rolloutRolling},
+		"deployment old pods remain":    {"Deployment", 1, twoReplicas, deployRolling, rolloutRolling},
+		"deployment updated, down":      {"Deployment", 1, twoReplicas, deployDegraded, rolloutDegraded},
+		"deployment timed out":          {"Deployment", 1, twoReplicas, deployTimedOut, rolloutRolling},
+		"deployment starting":           {"Deployment", 1, twoReplicas, deployStarting, rolloutRolling},
+		"deployment down, no condition": {"Deployment", 1, twoReplicas, `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0}`, rolloutDegraded},
+		"deployment scaled to zero":     {"Deployment", 1, `{"replicas":0}`, `{"observedGeneration":1}`, rolloutReady},
+		"deployment default replicas":   {"Deployment", 1, `{}`, `{"observedGeneration":1}`, rolloutRolling},
+		"statefulset ready":             {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"a"}`, rolloutReady},
+		"statefulset mid-update":        {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutRolling},
+		"statefulset down":              {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutDegraded},
+		"statefulset still creating":    {"StatefulSet", 1, `{"replicas":3}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutRolling},
+		"statefulset partition held":    {"StatefulSet", 1, `{"replicas":3,"updateStrategy":{"rollingUpdate":{"partition":2}}}`, `{"observedGeneration":1,"replicas":3,"readyReplicas":3,"updatedReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
+		"statefulset OnDelete":          {"StatefulSet", 1, `{"replicas":1,"updateStrategy":{"type":"OnDelete"}}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
+		"daemonset ready":               {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":3}`, rolloutReady},
+		"daemonset mid-update":          {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":1,"numberAvailable":3}`, rolloutRolling},
+		"daemonset down":                {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":2}`, rolloutDegraded},
+	} {
+		got, _, err := rolloutStatus(workload(t, tc.kind, "w", tc.gen, tc.spec, tc.status))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: state = %d, want %d", name, got, tc.want)
+		}
+	}
+}
+
+// An object kest doesn't track may put anything under spec; it must not fail the parse.
+func TestParseObjects_ForeignSpecShape(t *testing.T) {
 	data := `{"kind":"List","items":[
-		{"kind":"Deployment","metadata":{"name":"web","namespace":"apps"},
-		 "spec":{"template":{"spec":{"containers":[{"image":"web:1.2"},{"image":"sidecar:3"}]}}}},
-		{"kind":"Service","metadata":{"name":"web","namespace":"apps"},"spec":{}},
-		{"kind":"StatefulSet","metadata":{"name":"db","namespace":"apps"},
-		 "spec":{"template":{"spec":{"containers":[{"image":"postgres:17"}]}}}},
-		{"kind":"PersistentVolume","metadata":{"name":"data"},"spec":{}}
+		{"apiVersion":"example.com/v1","kind":"Widget","metadata":{"name":"w"},"spec":{"replicas":"three","template":"inline"}},
+		{"apiVersion":"apps/v1","kind":"DaemonSet","metadata":{"name":"agent","namespace":"kube-system"},
+		 "spec":{"template":{"spec":{"containers":[{"image":"agent:9"}]}}}}
 	]}`
-	got, err := parseWorkloads([]byte(data))
+	objs, err := parseObjects([]byte(data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Workload{
-		{Kind: "Deployment", Name: "web", Namespace: "apps", Images: []string{"web:1.2", "sidecar:3"}},
-		{Kind: "StatefulSet", Name: "db", Namespace: "apps", Images: []string{"postgres:17"}},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseWorkloads mismatch\n got: %+v\nwant: %+v", got, want)
-	}
-}
-
-// kubectl get -f on a single object returns the object itself, not a List.
-func TestParseWorkloads_SingleObject(t *testing.T) {
-	data := `{"kind":"DaemonSet","metadata":{"name":"agent","namespace":"kube-system"},
-		"spec":{"template":{"spec":{"containers":[{"image":"agent:9"}]}}}}`
-	got, err := parseWorkloads([]byte(data))
+	plan, err := planWait(nil, false, objs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Workload{{Kind: "DaemonSet", Name: "agent", Namespace: "kube-system", Images: []string{"agent:9"}}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseWorkloads mismatch\n got: %+v\nwant: %+v", got, want)
+	if len(plan) != 1 || plan[0].name != "kube-system/daemonset/agent" || !reflect.DeepEqual(plan[0].images, []string{"agent:9"}) {
+		t.Errorf("unexpected plan: %+v", plan)
 	}
 }
 
-func TestParseWorkloads_NoWorkloads(t *testing.T) {
-	got, err := parseWorkloads([]byte(`{"kind":"ConfigMap","metadata":{"name":"cfg"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Errorf("expected no workloads, got %+v", got)
-	}
-}
-
-func TestParseWorkloads_BadJSON(t *testing.T) {
-	if _, err := parseWorkloads([]byte("not json")); err == nil {
+func TestParseObjects_BadJSON(t *testing.T) {
+	if _, err := parseObjects([]byte("not json")); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -67,11 +101,233 @@ func TestGetWorkloadsArgs(t *testing.T) {
 	}
 }
 
-func TestRolloutStatusArgs(t *testing.T) {
-	w := Workload{Kind: "StatefulSet", Name: "db", Namespace: "apps"}
-	got := rolloutStatusArgs(w, Resolution{KubeContext: "my-cluster"}, 5*time.Minute)
-	want := []string{"rollout", "status", "statefulset/db", "--timeout", "5m0s", "--namespace", "apps", "--context", "my-cluster"}
+func TestPlanWait(t *testing.T) {
+	before := []kubeObject{
+		workload(t, "Deployment", "changed", 1, twoReplicas, deployReady),
+		workload(t, "Deployment", "steady", 1, twoReplicas, deployReady),
+		workload(t, "Deployment", "degraded", 1, twoReplicas, deployDegraded),
+		workload(t, "Deployment", "rolling", 1, twoReplicas, deployRolling),
+		workload(t, "Deployment", "changed-degraded", 1, twoReplicas, deployDegraded),
+	}
+	now := []kubeObject{
+		workload(t, "Deployment", "changed", 2, twoReplicas, deployReady),
+		workload(t, "Deployment", "steady", 1, twoReplicas, deployReady),
+		workload(t, "Deployment", "degraded", 1, twoReplicas, deployDegraded),
+		workload(t, "Deployment", "rolling", 1, twoReplicas, deployRolling),
+		workload(t, "Deployment", "changed-degraded", 2, twoReplicas, deployDegraded),
+		workload(t, "Deployment", "created", 1, twoReplicas, `{}`),
+	}
+
+	waited := func(base *baseline, all bool) map[string]bool {
+		t.Helper()
+		plan, err := planWait(base, all, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, w := range plan {
+			out[strings.TrimPrefix(w.name, "apps/deployment/")] = w.wait
+		}
+		return out
+	}
+
+	got := waited(&baseline{objects: before}, false)
+	want := map[string]bool{"changed": true, "steady": false, "degraded": false, "rolling": true, "changed-degraded": true, "created": true}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("rolloutStatusArgs mismatch\n got: %v\nwant: %v", got, want)
+		t.Errorf("default plan\n got: %v\nwant: %v", got, want)
+	}
+	for name, got := range map[string]map[string]bool{"--wait-all": waited(&baseline{objects: before}, true), "no baseline": waited(nil, false)} {
+		for w, wait := range got {
+			if !wait {
+				t.Errorf("%s: %s not waited on", name, w)
+			}
+		}
+	}
+}
+
+func testWait(t *testing.T, base *baseline, all bool, polls ...[]kubeObject) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	i := 0
+	fetch := func(context.Context) ([]kubeObject, error) {
+		objs := polls[min(i, len(polls)-1)]
+		i++
+		return objs, nil
+	}
+	err := waitForRollouts(fetch, base, waitSpec{Timeout: 30 * time.Millisecond, All: all, Interval: time.Millisecond}, &out)
+	return out.String(), err
+}
+
+func TestWaitForRollouts_ChangedBecomesReady(t *testing.T) {
+	base := &baseline{objects: []kubeObject{
+		workload(t, "Deployment", "web", 1, twoReplicas, deployReady),
+		workload(t, "Deployment", "stuck", 1, twoReplicas, deployDegraded),
+	}}
+	stuck := workload(t, "Deployment", "stuck", 1, twoReplicas, deployDegraded)
+	out, err := testWait(t, base, false,
+		[]kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady), stuck},
+		[]kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, `{"observedGeneration":2,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`), stuck},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"waiting on 1 of 2 workload(s)",
+		"ready     apps/deployment/web  web:1.2",
+		"NOT READY apps/deployment/stuck  web:1.2  (not ready before apply, not waited on)",
+		"warning: not ready before the apply and unchanged by it (--wait-all fails on these): apps/deployment/stuck",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestWaitForRollouts_ChangedTimesOut(t *testing.T) {
+	base := &baseline{objects: []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}}
+	out, err := testWait(t, base, false, []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, `{"observedGeneration":2,"replicas":3,"updatedReplicas":1,"availableReplicas":2}`)})
+	if err == nil || !strings.Contains(err.Error(), "rollout not ready within 30ms: apps/deployment/web") {
+		t.Fatalf("expected a timeout error, got %v", err)
+	}
+	if !strings.Contains(out, "FAILED    apps/deployment/web  web:1.2  (1/2 updated, 2 available)") {
+		t.Errorf("summary missing the failed workload:\n%s", out)
+	}
+	if n := strings.Count(out, "waiting: apps/deployment/web"); n != 1 {
+		t.Errorf("progress line printed %d times, want once per change:\n%s", n, out)
+	}
+}
+
+// Retrying a deploy whose StatefulSet never finished creating its pods must wait on it again, though the re-apply changes nothing.
+func TestWaitForRollouts_RetryWaitsOnHalfCreatedStatefulSet(t *testing.T) {
+	objs := []kubeObject{workload(t, "StatefulSet", "db", 1, `{"replicas":3}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`)}
+	out, err := testWait(t, &baseline{objects: objs}, false, objs)
+	if err == nil || !strings.Contains(err.Error(), "apps/statefulset/db") {
+		t.Fatalf("expected the retry to fail on the half-created StatefulSet, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "unfinished rollout before apply") {
+		t.Errorf("summary missing the reason:\n%s", out)
+	}
+}
+
+// The deadline bounds the sleep between polls, and no poll starts after it.
+func TestWaitForRollouts_DeadlineBoundsSleepAndPolls(t *testing.T) {
+	base := &baseline{objects: []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}}
+	calls := 0
+	fetch := func(ctx context.Context) ([]kubeObject, error) {
+		calls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("fetch got a context without the wait deadline")
+		}
+		if calls > 1 {
+			return []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, `{"observedGeneration":2,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`)}, nil
+		}
+		return []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady)}, nil
+	}
+	var out bytes.Buffer
+	start := time.Now()
+	err := waitForRollouts(fetch, base, waitSpec{Timeout: 20 * time.Millisecond, Interval: time.Hour}, &out)
+	if err == nil {
+		t.Fatalf("expected a timeout, got success:\n%s", out.String())
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("wait ran %s past a 20ms deadline", elapsed)
+	}
+	if calls != 1 {
+		t.Errorf("fetch called %d times, want no poll after the deadline", calls)
+	}
+}
+
+func TestWaitForRollouts_NothingChanged(t *testing.T) {
+	objs := []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}
+	out, err := testWait(t, &baseline{objects: objs}, false, objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "the apply changed no workloads") || !strings.Contains(out, "unchanged apps/deployment/web  web:1.2") {
+		t.Errorf("unexpected output:\n%s", out)
+	}
+}
+
+func TestWaitForRollouts_WaitAllFailsOnPreexisting(t *testing.T) {
+	objs := []kubeObject{workload(t, "Deployment", "stuck", 1, twoReplicas, deployDegraded)}
+	_, err := testWait(t, &baseline{objects: objs}, true, objs)
+	if err == nil || !strings.Contains(err.Error(), "apps/deployment/stuck") {
+		t.Fatalf("expected --wait-all to fail on the degraded workload, got %v", err)
+	}
+}
+
+// A transient poll failure mid-wait must not fail a rollout that then completes.
+func TestWaitForRollouts_ToleratesPollError(t *testing.T) {
+	base := &baseline{objects: []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}}
+	calls := 0
+	fetch := func(context.Context) ([]kubeObject, error) {
+		calls++
+		switch calls {
+		case 1:
+			return []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady)}, nil
+		case 2:
+			return nil, errors.New("connection refused")
+		}
+		return []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, `{"observedGeneration":2,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`)}, nil
+	}
+	var out bytes.Buffer
+	if err := waitForRollouts(fetch, base, waitSpec{Timeout: time.Second, Interval: time.Millisecond}, &out); err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out.String())
+	}
+}
+
+// A Deployment whose rollout timed out with every pod already replaced must still be waited on by a no-op retry.
+func TestWaitForRollouts_RetryWaitsOnTimedOutDeployment(t *testing.T) {
+	objs := []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployTimedOut)}
+	out, err := testWait(t, &baseline{objects: objs}, false, objs)
+	if err == nil || !strings.Contains(err.Error(), "apps/deployment/web") {
+		t.Fatalf("expected the retry to fail on the timed-out Deployment, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "rollout never completed; unfinished rollout before apply") {
+		t.Errorf("summary missing the reason:\n%s", out)
+	}
+}
+
+// A workload that was down before the apply but has recovered by the end is not reported as unavailable.
+func TestWaitForRollouts_RecoveredWorkloadNotWarned(t *testing.T) {
+	base := &baseline{objects: []kubeObject{
+		workload(t, "Deployment", "web", 1, twoReplicas, deployReady),
+		workload(t, "Deployment", "flaky", 1, twoReplicas, deployDegraded),
+	}}
+	out, err := testWait(t, base, false,
+		[]kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady), workload(t, "Deployment", "flaky", 1, twoReplicas, deployDegraded)},
+		[]kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, `{"observedGeneration":2,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`), workload(t, "Deployment", "flaky", 1, twoReplicas, deployReady)},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "NOT READY") || strings.Contains(out, "warning:") {
+		t.Errorf("recovered workload still reported as unavailable:\n%s", out)
+	}
+	if !strings.Contains(out, "unchanged apps/deployment/flaky  web:1.2  (not ready before apply, ready now)") {
+		t.Errorf("summary missing the recovered workload's note:\n%s", out)
+	}
+}
+
+// A waited workload that disappears mid-wait stays pending rather than counting as ready.
+func TestWaitForRollouts_MissingWorkloadIsPending(t *testing.T) {
+	base := &baseline{objects: []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}}
+	out, err := testWait(t, base, false, []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady)}, nil)
+	if err == nil || !strings.Contains(out, "FAILED    apps/deployment/web  web:1.2  (not found)") {
+		t.Fatalf("expected the missing workload to fail the wait, got %v\n%s", err, out)
+	}
+}
+
+// A workload gone by the first poll is still waited on, whether the deploy had it before or the apply just returned it.
+func TestWaitForRollouts_MissingFromFirstPoll(t *testing.T) {
+	web := workload(t, "Deployment", "web", 1, twoReplicas, deployReady)
+	for name, base := range map[string]*baseline{
+		"in the pre-apply snapshot": {objects: []kubeObject{web}},
+		"returned by the apply":     {applied: []kubeObject{web}},
+	} {
+		out, err := testWait(t, base, false, nil)
+		if err == nil || !strings.Contains(out, "FAILED    apps/deployment/web  web:1.2  (not found)") {
+			t.Errorf("%s: expected the missing workload to fail the wait, got %v\n%s", name, err, out)
+		}
 	}
 }
