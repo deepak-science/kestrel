@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -112,6 +113,10 @@ func rolloutStatus(o kubeObject) (rolloutState, string, error) {
 	case "StatefulSet":
 		detail := fmt.Sprintf("%d/%d ready", st.ReadyReplicas, want)
 		partition := spec.UpdateStrategy.RollingUpdate.Partition
+		// Pods are created in order, so a set still short of its replica count has matching revisions but an unfinished rollout.
+		if st.Replicas < want {
+			return rolloutRolling, fmt.Sprintf("%s, %d/%d created", detail, st.Replicas, want), nil
+		}
 		switch {
 		case onDelete:
 		case partition > 0 && st.UpdatedReplicas < want-partition:
@@ -268,11 +273,13 @@ func planWait(base *baseline, all bool, now []kubeObject) ([]*trackedWorkload, e
 
 // waitForRollouts polls the applied manifests' workloads under one deadline, then prints each workload's images.
 // Only a workload that was waited on and isn't ready by the deadline fails the deploy.
-func waitForRollouts(fetch func() ([]kubeObject, error), base *baseline, spec waitSpec, out io.Writer) error {
+// fetch gets the deadline's context so a stalled poll can't outlast it.
+func waitForRollouts(fetch func(context.Context) ([]kubeObject, error), base *baseline, spec waitSpec, out io.Writer) error {
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(out, format, a...) }
-	deadline := time.Now().Add(spec.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), spec.Timeout)
+	defer cancel()
 
-	objs, err := fetch()
+	objs, err := fetch(ctx)
 	if err != nil {
 		return fmt.Errorf("list applied workloads: %w", err)
 	}
@@ -321,15 +328,23 @@ func waitForRollouts(fetch func() ([]kubeObject, error), base *baseline, spec wa
 			}
 			w.state, w.detail = state, detail
 		}
-		if pending == 0 || !time.Now().Before(deadline) {
+		if pending == 0 {
 			break
 		}
-		time.Sleep(spec.Interval)
+		select {
+		case <-ctx.Done():
+		case <-time.After(spec.Interval):
+		}
+		if ctx.Err() != nil {
+			break
+		}
 		// A failed poll keeps the last good view; it only matters if the deadline passes first.
-		if next, err := fetch(); err != nil {
-			pollErr = err
-		} else {
+		next, err := fetch(ctx)
+		switch {
+		case err == nil:
 			objs, pollErr = next, nil
+		case ctx.Err() == nil:
+			pollErr = err
 		}
 	}
 

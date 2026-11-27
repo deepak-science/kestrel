@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,6 +17,9 @@ import (
 
 // Options configures a RunWithOpts call.
 type Options struct {
+	// Context, when set, kills the command once it is done.
+	Context context.Context
+
 	// Dir is the working directory. Empty means inherit.
 	Dir string
 
@@ -56,7 +60,11 @@ type Result struct {
 // to os.Stdout (optionally also capturing) and stderr to os.Stderr, and
 // records the execution in the exec log + slog.
 func RunWithOpts(name string, args []string, opts Options) (*Result, error) {
-	cmd := exec.Command(name, args...)
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = opts.Dir
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = os.Stderr

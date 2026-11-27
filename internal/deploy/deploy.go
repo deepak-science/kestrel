@@ -4,6 +4,7 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -187,7 +188,11 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		pollOpts := opts
 		pollOpts.CaptureStderr = false
 		pollOpts.SilentStderr = true
-		fetch := func() ([]kubeObject, error) { return getObjects(d.Manifests, res, d.Namespace, false, pollOpts) }
+		fetch := func(ctx context.Context) ([]kubeObject, error) {
+			o := pollOpts
+			o.Context = ctx
+			return getObjects(d.Manifests, res, d.Namespace, false, o)
+		}
 		return out, waitForRollouts(fetch, base, waitSpec{Timeout: pol.Wait, All: pol.WaitAll, Interval: waitPollInterval}, pol.out())
 	}
 	return out, nil

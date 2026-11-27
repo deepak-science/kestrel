@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -40,11 +41,12 @@ func TestRolloutStatus(t *testing.T) {
 		"deployment updated, down":    {"Deployment", 1, twoReplicas, deployDegraded, rolloutDegraded},
 		"deployment scaled to zero":   {"Deployment", 1, `{"replicas":0}`, `{"observedGeneration":1}`, rolloutReady},
 		"deployment default replicas": {"Deployment", 1, `{}`, `{"observedGeneration":1}`, rolloutRolling},
-		"statefulset ready":           {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"a"}`, rolloutReady},
-		"statefulset mid-update":      {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutRolling},
-		"statefulset down":            {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutDegraded},
-		"statefulset partition held":  {"StatefulSet", 1, `{"replicas":3,"updateStrategy":{"rollingUpdate":{"partition":2}}}`, `{"observedGeneration":1,"readyReplicas":3,"updatedReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
-		"statefulset OnDelete":        {"StatefulSet", 1, `{"replicas":1,"updateStrategy":{"type":"OnDelete"}}`, `{"observedGeneration":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
+		"statefulset ready":           {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"a"}`, rolloutReady},
+		"statefulset mid-update":      {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutRolling},
+		"statefulset down":            {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutDegraded},
+		"statefulset still creating":  {"StatefulSet", 1, `{"replicas":3}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutRolling},
+		"statefulset partition held":  {"StatefulSet", 1, `{"replicas":3,"updateStrategy":{"rollingUpdate":{"partition":2}}}`, `{"observedGeneration":1,"replicas":3,"readyReplicas":3,"updatedReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
+		"statefulset OnDelete":        {"StatefulSet", 1, `{"replicas":1,"updateStrategy":{"type":"OnDelete"}}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
 		"daemonset ready":             {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":3}`, rolloutReady},
 		"daemonset mid-update":        {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":1,"numberAvailable":3}`, rolloutRolling},
 		"daemonset down":              {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":2}`, rolloutDegraded},
@@ -142,7 +144,7 @@ func testWait(t *testing.T, base *baseline, all bool, polls ...[]kubeObject) (st
 	t.Helper()
 	var out bytes.Buffer
 	i := 0
-	fetch := func() ([]kubeObject, error) {
+	fetch := func(context.Context) ([]kubeObject, error) {
 		objs := polls[min(i, len(polls)-1)]
 		i++
 		return objs, nil
@@ -190,6 +192,46 @@ func TestWaitForRollouts_ChangedTimesOut(t *testing.T) {
 	}
 }
 
+// Retrying a deploy whose StatefulSet never finished creating its pods must wait on it again, though the re-apply changes nothing.
+func TestWaitForRollouts_RetryWaitsOnHalfCreatedStatefulSet(t *testing.T) {
+	objs := []kubeObject{workload(t, "StatefulSet", "db", 1, `{"replicas":3}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`)}
+	out, err := testWait(t, &baseline{objects: objs}, false, objs)
+	if err == nil || !strings.Contains(err.Error(), "apps/statefulset/db") {
+		t.Fatalf("expected the retry to fail on the half-created StatefulSet, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "unfinished rollout before apply") {
+		t.Errorf("summary missing the reason:\n%s", out)
+	}
+}
+
+// The deadline bounds the sleep between polls, and no poll starts after it.
+func TestWaitForRollouts_DeadlineBoundsSleepAndPolls(t *testing.T) {
+	base := &baseline{objects: []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}}
+	calls := 0
+	fetch := func(ctx context.Context) ([]kubeObject, error) {
+		calls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("fetch got a context without the wait deadline")
+		}
+		if calls > 1 {
+			return []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, `{"observedGeneration":2,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`)}, nil
+		}
+		return []kubeObject{workload(t, "Deployment", "web", 2, twoReplicas, deployReady)}, nil
+	}
+	var out bytes.Buffer
+	start := time.Now()
+	err := waitForRollouts(fetch, base, waitSpec{Timeout: 20 * time.Millisecond, Interval: time.Hour}, &out)
+	if err == nil {
+		t.Fatalf("expected a timeout, got success:\n%s", out.String())
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("wait ran %s past a 20ms deadline", elapsed)
+	}
+	if calls != 1 {
+		t.Errorf("fetch called %d times, want no poll after the deadline", calls)
+	}
+}
+
 func TestWaitForRollouts_NothingChanged(t *testing.T) {
 	objs := []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}
 	out, err := testWait(t, &baseline{objects: objs}, false, objs)
@@ -213,7 +255,7 @@ func TestWaitForRollouts_WaitAllFailsOnPreexisting(t *testing.T) {
 func TestWaitForRollouts_ToleratesPollError(t *testing.T) {
 	base := &baseline{objects: []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployReady)}}
 	calls := 0
-	fetch := func() ([]kubeObject, error) {
+	fetch := func(context.Context) ([]kubeObject, error) {
 		calls++
 		switch calls {
 		case 1:
