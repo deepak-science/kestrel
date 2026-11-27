@@ -57,28 +57,20 @@ func printApplyChanges(out io.Writer, changes []applyChange) {
 }
 
 // serverSideApply runs a server-side apply and prints a created/changed/unchanged line per object.
-// If the pre-apply snapshot fails (e.g. a CRD the manifests install doesn't exist yet), it falls back to kubectl's own output.
-func serverSideApply(path string, res Resolution, namespace string, ko kubectlOpts, extra []string, opts runner.Options, stdout, stderr io.Writer) (*runner.Result, error) {
+// Without a baseline (e.g. a CRD the manifests install doesn't exist yet), it falls back to kubectl's own output.
+func serverSideApply(path string, res Resolution, namespace string, ko kubectlOpts, extra []string, base *baseline, opts runner.Options, stdout, stderr io.Writer) (*runner.Result, error) {
+	if base == nil {
+		return runner.RunWithOpts("kubectl", kubectlArgs(path, res, namespace, ko, extra), opts)
+	}
 	snapOpts := opts
 	snapOpts.CaptureStdout = true
 	snapOpts.Silent = true
-
-	getArgs := append(getWorkloadsArgs(path, res, namespace), "--ignore-not-found")
-	var before []kubeObject
-	got, err := runner.RunWithOpts("kubectl", getArgs, snapOpts)
-	if err == nil {
-		before, err = parseObjects([]byte(got.Stdout))
-	}
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: couldn't snapshot objects before apply (%v); change summary unavailable\n", err)
-		return runner.RunWithOpts("kubectl", kubectlArgs(path, res, namespace, ko, extra), opts)
-	}
 
 	ko.JSON = true
 	result, err := runner.RunWithOpts("kubectl", kubectlArgs(path, res, namespace, ko, extra), snapOpts)
 	after, perr := parseObjects([]byte(result.Stdout))
 	if perr == nil && (err == nil || len(after) > 0) {
-		printApplyChanges(stdout, classifyApply(before, after))
+		printApplyChanges(stdout, classifyApply(base.objects, after))
 	}
 	if err != nil {
 		return result, err

@@ -204,6 +204,10 @@ out=$(cd "$proj" && "$KEST" deploy gitea --force 2>&1 || true)
 assert_contains "looks for workloads to wait on" "no Deployments/StatefulSets/DaemonSets to wait on" "$out"
 out=$(cd "$proj" && "$KEST" deploy gitea --force --wait=false 2>&1 || true)
 assert_not_contains "--wait=false skips the wait" "to wait on" "$out"
+sed -i 's|    manifests: k8s-manifests/gitea|&\n    server_side: false|' "$proj/.kestconfig"
+out=$(cd "$proj" && "$KEST" deploy gitea --force --wait-all 2>&1 || true)
+assert_contains "client-side applies snapshot first for the wait" "KUBECTL get -f k8s-manifests/gitea -o json --context my-cluster --ignore-not-found" "$out"
+sed -i '/server_side: false/d' "$proj/.kestconfig"
 
 echo
 echo "▶ --confirm without a terminal refuses before diffing"

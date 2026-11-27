@@ -46,9 +46,11 @@ type Policy struct {
 	PrintContext bool
 	// Out is where the context block is written. Defaults to os.Stderr.
 	Out io.Writer
-	// Wait, for manifest applies, runs rollout status on each workload with this per-workload timeout.
+	// Wait, for manifest applies, is how long to wait for the workloads the apply changed to roll out.
 	// Zero skips it. Helm applies already wait via --atomic.
 	Wait time.Duration
+	// WaitAll waits on every workload in the manifests and fails on any that isn't ready.
+	WaitAll bool
 	// ForceConflicts takes ownership of fields another field manager holds (server_side deploys only).
 	ForceConflicts bool
 	// Stdout receives the server-side apply change summary. Defaults to os.Stdout.
@@ -146,11 +148,25 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 	}
 
 	opts := runner.Options{Dir: projectRoot(cfg), Env: env, CaptureStderr: d.UsesServerSide()}
+	manifestApply := d.Kind() == config.DeployManifest && action == ActionApply
+	wait := manifestApply && pol.Wait > 0
+
+	// The pre-apply view feeds both the change summary and the choice of workloads to wait on.
+	var base *baseline
+	if manifestApply && (d.UsesServerSide() || wait) {
+		before, snapErr := getObjects(d.Manifests, res, d.Namespace, true, opts)
+		if snapErr == nil {
+			base = &baseline{objects: before}
+		} else {
+			_, _ = fmt.Fprintf(pol.out(), "warning: couldn't snapshot objects before apply (%v); %s\n", snapErr, noBaselineEffect(d.UsesServerSide(), wait))
+		}
+	}
+
 	var result *runner.Result
 	var err error
-	if action == ActionApply && d.UsesServerSide() {
+	if manifestApply && d.UsesServerSide() {
 		ko := kubectlOpts{ServerSide: true, ForceConflicts: pol.ForceConflicts}
-		result, err = serverSideApply(d.Manifests, res, d.Namespace, ko, extra, opts, pol.stdout(), pol.out())
+		result, err = serverSideApply(d.Manifests, res, d.Namespace, ko, extra, base, opts, pol.stdout(), pol.out())
 	} else {
 		result, err = runner.RunWithOpts(command, args, opts)
 	}
@@ -167,10 +183,27 @@ func Execute(cfg *config.Config, name string, d config.Deploy, res Resolution, a
 		return out, err
 	}
 
-	if d.Kind() == config.DeployManifest && action == ActionApply && pol.Wait > 0 {
-		return out, waitForRollouts(d.Manifests, res, d.Namespace, pol.Wait, opts, pol.out())
+	if wait {
+		pollOpts := opts
+		pollOpts.CaptureStderr = false
+		pollOpts.SilentStderr = true
+		fetch := func() ([]kubeObject, error) { return getObjects(d.Manifests, res, d.Namespace, false, pollOpts) }
+		return out, waitForRollouts(fetch, base, waitSpec{Timeout: pol.Wait, All: pol.WaitAll, Interval: waitPollInterval}, pol.out())
 	}
 	return out, nil
+}
+
+const waitPollInterval = 2 * time.Second
+
+func noBaselineEffect(serverSide, wait bool) string {
+	var effects []string
+	if serverSide {
+		effects = append(effects, "change summary unavailable")
+	}
+	if wait {
+		effects = append(effects, "waiting on every workload")
+	}
+	return strings.Join(effects, ", ")
 }
 
 // kubectl doesn't hand client-side ownership of an atomic field (e.g. a StatefulSet's volumeClaimTemplates) to the server-side manager when the live value has defaults filled in.
