@@ -317,3 +317,17 @@ func TestWaitForRollouts_MissingWorkloadIsPending(t *testing.T) {
 		t.Fatalf("expected the missing workload to fail the wait, got %v\n%s", err, out)
 	}
 }
+
+// A workload gone by the first poll is still waited on, whether the deploy had it before or the apply just returned it.
+func TestWaitForRollouts_MissingFromFirstPoll(t *testing.T) {
+	web := workload(t, "Deployment", "web", 1, twoReplicas, deployReady)
+	for name, base := range map[string]*baseline{
+		"in the pre-apply snapshot": {objects: []kubeObject{web}},
+		"returned by the apply":     {applied: []kubeObject{web}},
+	} {
+		out, err := testWait(t, base, false, nil)
+		if err == nil || !strings.Contains(out, "FAILED    apps/deployment/web  web:1.2  (not found)") {
+			t.Errorf("%s: expected the missing workload to fail the wait, got %v\n%s", name, err, out)
+		}
+	}
+}

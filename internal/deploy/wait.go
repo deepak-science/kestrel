@@ -206,6 +206,8 @@ func getObjects(path string, res Resolution, namespace string, opts runner.Optio
 // A nil baseline means the snapshot failed, so nothing is known about what the apply changed.
 type baseline struct {
 	objects []kubeObject
+	// applied is what a server-side apply returned; client-side applies leave it empty.
+	applied []kubeObject
 }
 
 type waitSpec struct {
@@ -241,10 +243,8 @@ func planWait(base *baseline, all bool, now []kubeObject) ([]*trackedWorkload, e
 	}
 
 	var out []*trackedWorkload
-	for _, o := range now {
-		if !rolloutKinds[o.Kind] {
-			continue
-		}
+	seen := map[string]bool{}
+	track := func(o kubeObject) (*trackedWorkload, error) {
 		spec, _, err := o.workload()
 		if err != nil {
 			return nil, err
@@ -253,7 +253,19 @@ func planWait(base *baseline, all bool, now []kubeObject) ([]*trackedWorkload, e
 		for _, c := range spec.Template.Spec.Containers {
 			t.images = append(t.images, c.Image)
 		}
+		seen[t.key] = true
 		out = append(out, t)
+		return t, nil
+	}
+
+	for _, o := range now {
+		if !rolloutKinds[o.Kind] {
+			continue
+		}
+		t, err := track(o)
+		if err != nil {
+			return nil, err
+		}
 
 		was, existed := prior[o.key()]
 		if base == nil || !existed {
@@ -280,6 +292,20 @@ func planWait(base *baseline, all bool, now []kubeObject) ([]*trackedWorkload, e
 			t.preexisting = !all
 		default:
 			t.wait = all
+		}
+	}
+
+	// A workload the deploy applied or already had, but which is gone from the first poll, is waited on rather than dropped.
+	if base != nil {
+		for _, o := range append(append([]kubeObject{}, base.applied...), base.objects...) {
+			if !rolloutKinds[o.Kind] || seen[o.key()] {
+				continue
+			}
+			t, err := track(o)
+			if err != nil {
+				return nil, err
+			}
+			t.wait = true
 		}
 	}
 	return out, nil

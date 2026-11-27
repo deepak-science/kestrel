@@ -69,6 +69,9 @@ func serverSideApply(path string, res Resolution, namespace string, ko kubectlOp
 	ko.JSON = true
 	result, err := runner.RunWithOpts("kubectl", kubectlArgs(path, res, namespace, ko, extra), snapOpts)
 	after, perr := parseObjects([]byte(result.Stdout))
+	if perr == nil {
+		base.applied = after
+	}
 	if perr == nil && (err == nil || len(after) > 0) {
 		printApplyChanges(stdout, classifyApply(base.objects, after))
 	}
