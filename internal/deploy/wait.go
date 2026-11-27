@@ -57,6 +57,21 @@ type workloadStatus struct {
 	DesiredNumberScheduled int64  `json:"desiredNumberScheduled"`
 	UpdatedNumberScheduled int64  `json:"updatedNumberScheduled"`
 	NumberAvailable        int64  `json:"numberAvailable"`
+	Conditions             []struct {
+		Type   string `json:"type"`
+		Reason string `json:"reason"`
+	} `json:"conditions"`
+}
+
+// rolloutCompleted reports whether a Deployment's current pod template ever finished rolling out.
+// The Progressing condition settles on NewReplicaSetAvailable then, and stays there if the pods later become unavailable.
+func (st workloadStatus) rolloutCompleted() bool {
+	for _, c := range st.Conditions {
+		if c.Type == "Progressing" {
+			return c.Reason == "NewReplicaSetAvailable"
+		}
+	}
+	return true
 }
 
 func (o kubeObject) workload() (workloadSpec, workloadStatus, error) {
@@ -107,6 +122,8 @@ func rolloutStatus(o kubeObject) (rolloutState, string, error) {
 		switch {
 		case st.UpdatedReplicas < want, st.Replicas > st.UpdatedReplicas:
 			return rolloutRolling, detail, nil
+		case st.AvailableReplicas < st.UpdatedReplicas && !st.rolloutCompleted():
+			return rolloutRolling, detail + ", rollout never completed", nil
 		case st.AvailableReplicas < st.UpdatedReplicas:
 			return rolloutDegraded, detail, nil
 		}

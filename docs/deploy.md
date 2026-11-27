@@ -109,7 +109,9 @@ After a manifest apply, kest waits for the rollout of the Deployments, StatefulS
 | unchanged | an earlier rollout never finished | waits; fails the deploy if it isn't ready in time |
 | unchanged | on the current spec, but pods unavailable | warns (`NOT READY` in the summary), exit code unaffected |
 
-The third row is what makes retrying a failed deploy fail again instead of passing because the re-apply was a no-op. The fourth keeps a workload that is broken for its own reasons from holding up, or failing, a deploy that didn't touch it. A Deployment using the `Recreate` strategy can't be told apart there: once its old pods are gone, a failed rollout looks the same as a workload that is simply down.
+The third row is what makes retrying a failed deploy fail again instead of passing because the re-apply was a no-op. The fourth keeps a workload that is broken for its own reasons from holding up, or failing, a deploy that didn't touch it.
+
+When every pod is already on the current spec but not all are available, a Deployment's `Progressing` condition tells the two apart: it only reaches `NewReplicaSetAvailable` once a rollout completes, so one that never did still counts as unfinished. A StatefulSet short of its replica count counts as unfinished too. StatefulSets and DaemonSets otherwise keep no such record, so one whose pods all exist on the current revision but never became available looks the same as one that is simply down, and retrying its failed deploy warns instead of failing.
 
 All waited workloads share one deadline, `--wait-timeout` (default `5m`), so the worst case is a single timeout. `--wait-all` waits on every workload in the manifest dir and fails on any that isn't ready, changed or not. `--wait=false` skips the wait. If the pre-apply snapshot fails, kest can't tell what changed and waits on everything.
 

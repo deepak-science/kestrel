@@ -23,7 +23,9 @@ func workload(t *testing.T, kind, name string, gen int64, spec, status string) k
 
 const (
 	deployReady    = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":2}`
-	deployDegraded = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0}`
+	deployDegraded = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0,"conditions":[{"type":"Progressing","reason":"NewReplicaSetAvailable"}]}`
+	deployTimedOut = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0,"conditions":[{"type":"Available","reason":"MinimumReplicasUnavailable"},{"type":"Progressing","reason":"ProgressDeadlineExceeded"}]}`
+	deployStarting = `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0,"conditions":[{"type":"Progressing","reason":"ReplicaSetUpdated"}]}`
 	deployRolling  = `{"observedGeneration":1,"replicas":3,"updatedReplicas":1,"availableReplicas":2}`
 	twoReplicas    = `{"replicas":2,"template":{"spec":{"containers":[{"image":"web:1.2"}]}}}`
 )
@@ -35,21 +37,24 @@ func TestRolloutStatus(t *testing.T) {
 		spec, status string
 		want         rolloutState
 	}{
-		"deployment ready":            {"Deployment", 1, twoReplicas, deployReady, rolloutReady},
-		"deployment stale status":     {"Deployment", 2, twoReplicas, deployReady, rolloutRolling},
-		"deployment old pods remain":  {"Deployment", 1, twoReplicas, deployRolling, rolloutRolling},
-		"deployment updated, down":    {"Deployment", 1, twoReplicas, deployDegraded, rolloutDegraded},
-		"deployment scaled to zero":   {"Deployment", 1, `{"replicas":0}`, `{"observedGeneration":1}`, rolloutReady},
-		"deployment default replicas": {"Deployment", 1, `{}`, `{"observedGeneration":1}`, rolloutRolling},
-		"statefulset ready":           {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"a"}`, rolloutReady},
-		"statefulset mid-update":      {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutRolling},
-		"statefulset down":            {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutDegraded},
-		"statefulset still creating":  {"StatefulSet", 1, `{"replicas":3}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutRolling},
-		"statefulset partition held":  {"StatefulSet", 1, `{"replicas":3,"updateStrategy":{"rollingUpdate":{"partition":2}}}`, `{"observedGeneration":1,"replicas":3,"readyReplicas":3,"updatedReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
-		"statefulset OnDelete":        {"StatefulSet", 1, `{"replicas":1,"updateStrategy":{"type":"OnDelete"}}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
-		"daemonset ready":             {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":3}`, rolloutReady},
-		"daemonset mid-update":        {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":1,"numberAvailable":3}`, rolloutRolling},
-		"daemonset down":              {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":2}`, rolloutDegraded},
+		"deployment ready":              {"Deployment", 1, twoReplicas, deployReady, rolloutReady},
+		"deployment stale status":       {"Deployment", 2, twoReplicas, deployReady, rolloutRolling},
+		"deployment old pods remain":    {"Deployment", 1, twoReplicas, deployRolling, rolloutRolling},
+		"deployment updated, down":      {"Deployment", 1, twoReplicas, deployDegraded, rolloutDegraded},
+		"deployment timed out":          {"Deployment", 1, twoReplicas, deployTimedOut, rolloutRolling},
+		"deployment starting":           {"Deployment", 1, twoReplicas, deployStarting, rolloutRolling},
+		"deployment down, no condition": {"Deployment", 1, twoReplicas, `{"observedGeneration":1,"replicas":2,"updatedReplicas":2,"availableReplicas":0}`, rolloutDegraded},
+		"deployment scaled to zero":     {"Deployment", 1, `{"replicas":0}`, `{"observedGeneration":1}`, rolloutReady},
+		"deployment default replicas":   {"Deployment", 1, `{}`, `{"observedGeneration":1}`, rolloutRolling},
+		"statefulset ready":             {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"a"}`, rolloutReady},
+		"statefulset mid-update":        {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutRolling},
+		"statefulset down":              {"StatefulSet", 1, `{"replicas":1}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutDegraded},
+		"statefulset still creating":    {"StatefulSet", 1, `{"replicas":3}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":0,"currentRevision":"a","updateRevision":"a"}`, rolloutRolling},
+		"statefulset partition held":    {"StatefulSet", 1, `{"replicas":3,"updateStrategy":{"rollingUpdate":{"partition":2}}}`, `{"observedGeneration":1,"replicas":3,"readyReplicas":3,"updatedReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
+		"statefulset OnDelete":          {"StatefulSet", 1, `{"replicas":1,"updateStrategy":{"type":"OnDelete"}}`, `{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentRevision":"a","updateRevision":"b"}`, rolloutReady},
+		"daemonset ready":               {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":3}`, rolloutReady},
+		"daemonset mid-update":          {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":1,"numberAvailable":3}`, rolloutRolling},
+		"daemonset down":                {"DaemonSet", 1, `{}`, `{"observedGeneration":1,"desiredNumberScheduled":3,"updatedNumberScheduled":3,"numberAvailable":2}`, rolloutDegraded},
 	} {
 		got, _, err := rolloutStatus(workload(t, tc.kind, "w", tc.gen, tc.spec, tc.status))
 		if err != nil {
@@ -268,5 +273,17 @@ func TestWaitForRollouts_ToleratesPollError(t *testing.T) {
 	var out bytes.Buffer
 	if err := waitForRollouts(fetch, base, waitSpec{Timeout: time.Second, Interval: time.Millisecond}, &out); err != nil {
 		t.Fatalf("unexpected error: %v\n%s", err, out.String())
+	}
+}
+
+// A Deployment whose rollout timed out with every pod already replaced must still be waited on by a no-op retry.
+func TestWaitForRollouts_RetryWaitsOnTimedOutDeployment(t *testing.T) {
+	objs := []kubeObject{workload(t, "Deployment", "web", 1, twoReplicas, deployTimedOut)}
+	out, err := testWait(t, &baseline{objects: objs}, false, objs)
+	if err == nil || !strings.Contains(err.Error(), "apps/deployment/web") {
+		t.Fatalf("expected the retry to fail on the timed-out Deployment, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "rollout never completed; unfinished rollout before apply") {
+		t.Errorf("summary missing the reason:\n%s", out)
 	}
 }

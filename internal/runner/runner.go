@@ -15,6 +15,8 @@ import (
 	"github.com/deepak-science/kestrel/internal/execlog"
 )
 
+const cancelWaitDelay = 2 * time.Second
+
 // Options configures a RunWithOpts call.
 type Options struct {
 	// Context, when set, kills the command once it is done.
@@ -65,6 +67,10 @@ func RunWithOpts(name string, args []string, opts Options) (*Result, error) {
 		ctx = context.Background()
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	if opts.Context != nil {
+		// Killing the command doesn't close output pipes a child of it (e.g. a credential helper) still holds.
+		cmd.WaitDelay = cancelWaitDelay
+	}
 	cmd.Dir = opts.Dir
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = os.Stderr
